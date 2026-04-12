@@ -1,0 +1,26 @@
+{
+  "name": "win98botter-relay",
+  "version": "0.1.0",
+  "description": "Relay server for Win98 MCP bot — intelligence and orchestration layer",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test:mock": "node test/mock-win98.js",
+    "build:ui": "cd ui && npm install && npm run build"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.0.0",
+    "fastify": "^5.8.4",
+    "pino-pretty": "^13.0.0",
+    "better-sqlite3": "^12.8.0",
+    "pg": "^8.13.1",
+    "ini": "^4.1.3",
+    "diff": "^8.0.4",
+    "node-cron": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

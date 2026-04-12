@@ -1,0 +1,26 @@
+; AGENT.INI — Win98 MCP Agent configuration
+; Place this file at: C:\WIN98BOTTER\AGENT.INI
+;
+; The agent reads this file on startup.
+; Command-line args override these values:
+;   win98-mcp-server.exe <host> <port>
+
+[relay]
+; IP address or hostname of the relay server machine.
+; If connecting from Win98 to a PC on the LAN, use the PC's LAN IP.
+; Example: 192.168.1.100
+host=192.168.1.100
+
+; TCP port the relay server listens on (default 9000)
+port=9000
+
+[logging]
+; Persist agent operational logs to disk for troubleshooting.
+enabled=1
+
+; 0 = normal lifecycle/errors only
+; 1 = extra diagnostics such as message sizes and reconnect details
+verbose=0
+
+; Default log file for agent/service activity.
+path=C:\WIN98BOTTER\agent.log

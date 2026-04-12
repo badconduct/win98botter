@@ -1,0 +1,52 @@
+; permissions.ini — Tool permission whitelist for Win98 MCP Agent
+; Place this file at: C:\WIN98BOTTER\permissions.ini
+;
+; Set a key to 1 to enable that category of tools.
+; Set to 0 (or omit) to disable.
+; The relay server can trigger a reload at runtime via permissions/update.
+;
+; START CONSERVATIVE — enable only what you actually need.
+
+[tools]
+; File read (read_file, list_directory, get_file_info, grep_file, etc.)
+read_file=1
+
+; File write (write_file, append_file, copy_file, move_file, etc.)
+write_file=1
+
+; File delete (delete_file)
+delete_file=0
+
+; Process list (list_processes)
+list_processes=1
+
+; Process kill (kill_process)
+kill_process=0
+
+; Command execution (run_command, run_bat, write_and_run_bat, start_command, etc.)
+run_command=1
+
+; Registry read (read_registry, list_registry)
+read_registry=1
+
+; Registry write (write_registry, delete_registry)
+write_registry=0
+
+; Hardware port I/O — DANGEROUS, only enable if needed
+read_port=0
+write_port=0
+
+; VxD driver loading — DANGEROUS
+load_vxd=0
+
+; Serial / COM port
+serial=0
+
+; AT scheduler (schedule_task, list_tasks, delete_task)
+scheduler=0
+
+; Audio / MIDI device enumeration
+audio=1
+
+; Display settings (set_display_settings, set_desktop_appearance)
+display=1

@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: win98botter-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=win98botter
+      - POSTGRES_USER=win98botter
+      - POSTGRES_PASSWORD=win98botter
+    ports:
+      - "5432:5432"
+    volumes:
+      - relay_pg:/var/lib/postgresql/data
+
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: win98botter-relay
+    restart: unless-stopped
+    ports:
+      - "9000:9000" # Win98 agent TCP
+      - "3000:3000" # Web GUI / REST API
+    volumes:
+      - relay_db:/data # SQLite database
+      - ./staging_data:/app/staging_data # Staged file changes
+    env_file:
+      - .env # BOT_API_URL, BOT_API_KEY, BOT_MODEL, etc.
+    environment:
+      - DB_PATH=/data/relay.db
+      - STAGING_DIR=/app/staging_data
+      - NODE_ENV=production
+      - PHASE1_PG_ENABLED=${PHASE1_PG_ENABLED:-1}
+      - PHASE1_PG_HOST=${PHASE1_PG_HOST:-postgres}
+      - PHASE1_PG_PORT=${PHASE1_PG_PORT:-5432}
+      - PHASE1_PG_DATABASE=${PHASE1_PG_DATABASE:-win98botter}
+      - PHASE1_PG_USER=${PHASE1_PG_USER:-win98botter}
+      - PHASE1_PG_PASSWORD=${PHASE1_PG_PASSWORD:-win98botter}
+      - PHASE1_PG_SSL=${PHASE1_PG_SSL:-0}
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # lets the container reach Ollama on the host (Linux)
+
+volumes:
+  relay_db:
+  relay_pg:

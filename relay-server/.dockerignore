@@ -1,0 +1,20 @@
+# Never copy host node_modules — native addons are platform-specific
+node_modules/
+ui/node_modules/
+
+# Don't overwrite the public/ dir that ui-builder produces
+public/
+
+# Docker artefacts
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+# Git / editor
+.git/
+.gitignore
+*.md
+
+# Runtime data that should come from Docker volumes, not the image
+.env
+staging_data/
