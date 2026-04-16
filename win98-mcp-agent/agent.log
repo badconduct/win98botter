@@ -1,0 +1,71 @@
+2026-04-12 17:49:51 | INFO  | Starting Win98MCPAgent v0.5 | relay=192.168.1.102:9000 | base=C:\WIN98BOTTER | service=1 | verbose=0 | log=C:\WIN98BOTTER\agent.log
+2026-04-12 17:49:51 | INFO  | WinSock initialized: Microsoft wsock32.dll, ver2.2, 32bit of Apr 22 1999, at 20:29:32.
+2026-04-12 17:49:51 | INFO  | Permissions loaded from C:\WIN98BOTTER\permissions.ini
+2026-04-12 17:49:51 | ERROR | IPC named pipe create failed.
+2026-04-12 17:49:51 | WARN  | IPC server thread started but pipe was not created (ready=0).
+2026-04-12 17:49:51 | WARN  | Local IPC server failed to start.
+2026-04-12 17:49:51 | INFO  | Connecting to 192.168.1.102:9000 (attempt 1/3)...
+2026-04-12 17:49:51 | INFO  | Connected to relay.
+2026-04-12 17:49:51 | INFO  | Connection established. Waiting for relay messages.
+2026-04-12 17:50:08 | INFO  | RPC set_permissions applied.
+2026-04-12 17:50:08 | INFO  | RPC set_permissions applied.
+2026-04-12 17:50:08 | INFO  | RPC set_permissions applied.
+2026-04-12 17:50:09 | INFO  | RPC set_permissions applied.
+2026-04-12 17:50:09 | INFO  | RPC set_permissions applied.
+2026-04-12 17:50:09 | INFO  | RPC set_permissions applied.
+2026-04-12 17:50:10 | INFO  | RPC set_permissions applied.
+2026-04-12 17:50:39 | INFO  | RPC tools/call requested: file_exists
+2026-04-12 17:50:39 | WARN  | RPC tools/call denied by permissions: file_exists
+2026-04-12 17:52:57 | INFO  | RPC tools/call requested: file_exists
+2026-04-12 17:52:57 | WARN  | RPC tools/call denied by permissions: file_exists
+2026-04-12 17:53:00 | INFO  | RPC tools/call requested: list_directory
+2026-04-12 17:53:00 | INFO  | RPC tools/call completed: list_directory (1 ms)
+2026-04-12 17:53:38 | WARN  | Receive error. Relay disconnected.
+2026-04-12 17:53:38 | WARN  | Disconnected from relay. Reconnecting in 5 seconds.
+2026-04-12 17:53:43 | INFO  | Connecting to 192.168.1.102:9000 (attempt 1/3)...
+2026-04-12 17:53:46 | INFO  | Connected to relay.
+2026-04-12 17:53:46 | INFO  | Connection established. Waiting for relay messages.
+2026-04-12 17:54:09 | INFO  | RPC set_permissions applied.
+2026-04-12 17:54:09 | INFO  | RPC set_permissions applied.
+2026-04-12 17:54:10 | INFO  | RPC set_permissions applied.
+2026-04-12 17:54:10 | INFO  | RPC set_permissions applied.
+2026-04-12 17:54:11 | INFO  | RPC set_permissions applied.
+2026-04-12 17:54:11 | INFO  | RPC set_permissions applied.
+2026-04-12 17:54:12 | INFO  | RPC set_permissions applied.
+2026-04-12 17:54:42 | INFO  | RPC tools/call requested: file_exists
+2026-04-12 17:54:42 | WARN  | RPC tools/call denied by permissions: file_exists
+2026-04-12 17:54:54 | INFO  | RPC tools/call requested: run_command
+2026-04-12 17:54:54 | INFO  | RPC tools/call completed: run_command (21 ms)
+2026-04-12 17:55:17 | INFO  | RPC tools/call requested: list_directory
+2026-04-12 17:55:26 | INFO  | RPC tools/call completed: list_directory (9003 ms)
+2026-04-12 18:05:18 | WARN  | Receive error. Relay disconnected.
+2026-04-12 18:05:18 | WARN  | Disconnected from relay. Reconnecting in 5 seconds.
+2026-04-12 18:05:23 | INFO  | Connecting to 192.168.1.102:9000 (attempt 1/3)...
+2026-04-12 18:05:23 | INFO  | Connected to relay.
+2026-04-12 18:05:23 | INFO  | Connection established. Waiting for relay messages.
+2026-04-12 18:07:03 | WARN  | Receive error. Relay disconnected.
+2026-04-12 18:07:03 | WARN  | Disconnected from relay. Reconnecting in 5 seconds.
+2026-04-12 18:07:08 | INFO  | Connecting to 192.168.1.102:9000 (attempt 1/3)...
+2026-04-12 18:07:08 | INFO  | Connected to relay.
+2026-04-12 18:07:08 | INFO  | Connection established. Waiting for relay messages.
+2026-04-12 18:07:35 | INFO  | RPC set_permissions applied.
+2026-04-12 18:07:36 | INFO  | RPC set_permissions applied.
+2026-04-12 18:07:36 | INFO  | RPC set_permissions applied.
+2026-04-12 18:07:37 | INFO  | RPC set_permissions applied.
+2026-04-12 18:07:38 | INFO  | RPC set_permissions applied.
+2026-04-12 18:11:21 | WARN  | Receive error. Relay disconnected.
+2026-04-12 18:11:21 | WARN  | Disconnected from relay. Reconnecting in 5 seconds.
+2026-04-12 18:11:26 | INFO  | Connecting to 192.168.1.102:9000 (attempt 1/3)...
+2026-04-12 18:12:31 | INFO  | Starting Win98MCPAgent v0.5 | relay=192.168.1.102:9000 | base=C:\WIN98BOTTER | service=1 | verbose=0 | log=C:\WIN98BOTTER\agent.log
+2026-04-12 18:12:31 | INFO  | WinSock initialized: Microsoft wsock32.dll, ver2.2, 32bit of Apr 22 1999, at 20:29:32.
+2026-04-12 18:12:31 | INFO  | Permissions loaded from C:\WIN98BOTTER\permissions.ini
+2026-04-12 18:12:31 | ERROR | IPC named pipe create failed.
+2026-04-12 18:12:31 | WARN  | IPC server thread started but pipe was not created (ready=0).
+2026-04-12 18:12:31 | WARN  | Local IPC server failed to start.
+2026-04-12 18:12:31 | INFO  | Connecting to 192.168.1.102:9000 (attempt 1/3)...
+2026-04-12 18:12:31 | INFO  | Connected to relay.
+2026-04-12 18:12:31 | INFO  | Connection established. Waiting for relay messages.
+2026-04-12 18:16:57 | INFO  | RPC tools/call requested: file_exists
+2026-04-12 18:16:57 | WARN  | RPC tools/call denied by permissions: file_exists
+2026-04-12 18:17:01 | INFO  | RPC tools/call requested: run_command
+2026-04-12 18:17:01 | INFO  | RPC tools/call completed: run_command (22 ms)

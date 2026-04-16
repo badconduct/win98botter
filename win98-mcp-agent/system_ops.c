@@ -18,6 +18,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+
+#ifdef _MSC_VER
+#pragma comment(lib, "winmm.lib")
+#endif
+
 #include "config.h"
 #include "system_ops.h"
 #include "cJSON.h"
@@ -196,21 +201,35 @@ cJSON *tool_read_port(cJSON *params)
 
     if (width == 8) {
 #ifdef _MSC_VER
-        __asm { mov dx, port; in al, dx; mov value, eax }
+        __asm {
+            mov dx, port
+            in  al, dx
+            movzx eax, al
+            mov value, eax
+        }
 #else
         { unsigned char t; __asm__ volatile("inb %%dx, %0" : "=a"(t) : "d"(port)); value = t; }
 #endif
         value &= 0xFF;
     } else if (width == 16) {
 #ifdef _MSC_VER
-        __asm { mov dx, port; in ax, dx; mov value, eax }
+        __asm {
+            mov dx, port
+            in  ax, dx
+            movzx eax, ax
+            mov value, eax
+        }
 #else
         { unsigned short t; __asm__ volatile("inw %%dx, %0" : "=a"(t) : "d"(port)); value = t; }
 #endif
         value &= 0xFFFF;
     } else {
 #ifdef _MSC_VER
-        __asm { mov dx, port; in eax, dx; mov value, eax }
+        __asm {
+            mov dx, port
+            in  eax, dx
+            mov value, eax
+        }
 #else
         __asm__ volatile("inl %%dx, %0" : "=a"(value) : "d"(port));
 #endif
@@ -245,19 +264,31 @@ cJSON *tool_write_port(cJSON *params)
 
     if (width == 8) {
 #ifdef _MSC_VER
-        __asm { mov dx, port; mov al, byte ptr val; out dx, al }
+        __asm {
+            mov dx, port
+            mov eax, val
+            out dx, al
+        }
 #else
         __asm__ volatile("outb %0, %%dx" : : "a"((unsigned char)val), "d"(port));
 #endif
     } else if (width == 16) {
 #ifdef _MSC_VER
-        __asm { mov dx, port; mov ax, word ptr val; out dx, ax }
+        __asm {
+            mov dx, port
+            mov eax, val
+            out dx, ax
+        }
 #else
         __asm__ volatile("outw %0, %%dx" : : "a"((unsigned short)val), "d"(port));
 #endif
     } else {
 #ifdef _MSC_VER
-        __asm { mov dx, port; mov eax, val; out dx, eax }
+        __asm {
+            mov dx, port
+            mov eax, val
+            out dx, eax
+        }
 #else
         __asm__ volatile("outl %0, %%dx" : : "a"(val), "d"(port));
 #endif
@@ -321,7 +352,7 @@ static BOOL CALLBACK enum_wnd_proc(HWND hwnd, LPARAM lp)
     GetClassNameA(hwnd,  class_name, sizeof(class_name));
 
     entry = cJSON_CreateObject();
-    cJSON_AddNumberToObject(entry, "hwnd",       (double)(DWORD_PTR)hwnd);
+    cJSON_AddNumberToObject(entry, "hwnd",       (double)(DWORD)hwnd);
     cJSON_AddStringToObject(entry, "title",      title);
     cJSON_AddStringToObject(entry, "class_name", class_name);
     cJSON_AddBoolToObject  (entry, "visible",    1);
@@ -365,7 +396,7 @@ cJSON *tool_send_window_message(cJSON *params)
         return result;
     }
 
-    hwnd = (HWND)(DWORD_PTR)(DWORD)j_hwnd->valuedouble;
+    hwnd = (HWND)(DWORD)j_hwnd->valuedouble;
     msg  = (UINT)j_msg->valuedouble;
     if (cJSON_IsNumber(j_wp)) wp = (WPARAM)(DWORD)j_wp->valuedouble;
     if (cJSON_IsNumber(j_lp)) lp = (LPARAM)(DWORD)j_lp->valuedouble;

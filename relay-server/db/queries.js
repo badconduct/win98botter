@@ -159,6 +159,356 @@ function getFileChangeById(changeId) {
     .get(changeId);
 }
 
+// ── File Location Cache ───────────────────────────────────────────────────────
+
+/**
+ * Get known locations for a file by name on a specific agent.
+ * Returns most recently verified locations first.
+ */
+function getKnownFileLocations(agentId, fileName) {
+  return getDb()
+    .prepare(
+      `SELECT discovered_path, first_found_at, last_verified, exists_flag
+       FROM file_locations 
+       WHERE agent_id = ? AND file_name = ?
+       ORDER BY last_verified DESC`,
+    )
+    .all(agentId, fileName);
+}
+
+/**
+ * Record a newly discovered file location.
+ * If the location was already known, this is a no-op (UNIQUE constraint handles it).
+ */
+function recordFileLocation(agentId, fileName, discPath) {
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO file_locations 
+       (agent_id, file_name, discovered_path, first_found_at, last_verified, exists_flag)
+       VALUES (?, ?, ?, ?, ?, 1)`,
+    )
+    .run(agentId, fileName, discPath, now(), now());
+}
+
+/**
+ * Update the verification status and timestamp for a file location.
+ * Used when the LLM has verified a file still exists (or no longer exists).
+ */
+function updateFileLocationVerification(agentId, fileName, discPath, exists) {
+  getDb()
+    .prepare(
+      `UPDATE file_locations 
+       SET last_verified = ?, exists_flag = ?
+       WHERE agent_id = ? AND file_name = ? AND discovered_path = ?`,
+    )
+    .run(now(), exists ? 1 : 0, agentId, fileName, discPath);
+}
+
+/**
+ * Mark all known locations for a file as non-existent (e.g., after thorough search failed).
+ * Useful when file search has been exhausted and no location was found.
+ */
+function markFileLocationsNotFound(agentId, fileName) {
+  getDb()
+    .prepare(
+      `UPDATE file_locations 
+       SET exists_flag = 0, last_verified = ?
+       WHERE agent_id = ? AND file_name = ?`,
+    )
+    .run(now(), agentId, fileName);
+}
+
+// ── File Contents Storage ─────────────────────────────────────────────────────
+
+/**
+ * Store or update file content for a specific line range.
+ * Supports partial reads: if lines 1-10 are known and we read lines 50-60,
+ * both ranges are stored separately and can be merged for display.
+ */
+function storeFileContent(
+  fileLocationId,
+  lineStart,
+  lineEnd,
+  content,
+  bytesRead,
+) {
+  const contentHash = require("crypto")
+    .createHash("sha256")
+    .update(content)
+    .digest("hex");
+
+  getDb()
+    .prepare(
+      `INSERT INTO file_contents 
+       (file_location_id, line_start, line_end, content, content_hash, bytes_read, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(file_location_id, line_start, line_end) DO UPDATE SET
+         content = excluded.content,
+         content_hash = excluded.content_hash,
+         bytes_read = excluded.bytes_read,
+         updated_at = excluded.updated_at`,
+    )
+    .run(
+      fileLocationId,
+      lineStart || null,
+      lineEnd || null,
+      content,
+      contentHash,
+      bytesRead,
+      now(),
+    );
+}
+
+/**
+ * Get all stored content ranges for a file.
+ * Returns all ranges so caller can determine what's been cached and what gaps exist.
+ */
+function getFileContentRanges(fileLocationId) {
+  return getDb()
+    .prepare(
+      `SELECT line_start, line_end, bytes_read, content_hash, updated_at
+       FROM file_contents
+       WHERE file_location_id = ?
+       ORDER BY line_start ASC, line_end ASC`,
+    )
+    .all(fileLocationId);
+}
+
+/**
+ * Get cached content for a specific line range.
+ * Returns all overlapping ranges and their content.
+ */
+function getCachedFileContent(fileLocationId, lineStart, lineEnd) {
+  return getDb()
+    .prepare(
+      `SELECT line_start, line_end, content, bytes_read 
+       FROM file_contents
+       WHERE file_location_id = ?
+         AND ((line_start IS NULL AND line_end IS NULL) 
+              OR (? IS NULL OR line_start <= ?)
+              OR (? IS NULL OR line_end >= ?))
+       ORDER BY line_start ASC`,
+    )
+    .all(fileLocationId, lineEnd, lineEnd, lineStart, lineStart);
+}
+
+/**
+ * Get the first N bytes of a file (most commonly requested range).
+ */
+function getFirstBytesOfFile(fileLocationId, limit = 256) {
+  return getDb()
+    .prepare(
+      `SELECT content, bytes_read, updated_at
+       FROM file_contents
+       WHERE file_location_id = ?
+         AND (line_start IS NULL OR line_start = 1)
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+    )
+    .get(fileLocationId);
+}
+
+/**
+ * Update MIME type and text flag for a file location.
+ * Called after file_exists or read_file to indicate file type.
+ */
+function updateFileMetadata(
+  fileLocationId,
+  mimeType,
+  isTextFile,
+  fileSizeBytes,
+) {
+  getDb()
+    .prepare(
+      `UPDATE file_locations
+       SET mime_type = ?, is_text_file = ?, file_size_bytes = ?
+       WHERE id = ?`,
+    )
+    .run(mimeType, isTextFile ? 1 : 0, fileSizeBytes, fileLocationId);
+}
+
+// ── Directory Tree Building ───────────────────────────────────────────────────
+
+/**
+ * Record a discovered file or directory in the tree.
+ * Automatically extracts parent path from the full path.
+ */
+function recordDirectoryTreeEntry(agentId, fullPath, isDirectory) {
+  // Use Windows-style path parsing regardless of host OS.
+  const normalized = String(fullPath || "").replace(/\//g, "\\");
+  const parts = normalized.split("\\").filter(Boolean);
+
+  if (parts.length === 0) return;
+
+  const fileName = parts[parts.length - 1];
+  const drive = parts[0].endsWith(":") ? parts[0] : "C:";
+  const parentParts = parts.slice(0, -1);
+  const parentPath = parentParts.length > 0 ? parentParts.join("\\") : drive;
+
+  getDb()
+    .prepare(
+      `INSERT INTO directory_tree 
+       (agent_id, path, file_name, is_directory, parent_path, discovered_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(agent_id, path) DO NOTHING`,
+    )
+    .run(agentId, normalized, fileName, isDirectory ? 1 : 0, parentPath, now());
+}
+
+/**
+ * Get all entries in a directory (one level deep).
+ */
+function getDirectoryContents(agentId, dirPath) {
+  return getDb()
+    .prepare(
+      `SELECT path, file_name, is_directory, discovered_at
+       FROM directory_tree
+       WHERE agent_id = ? AND parent_path = ?
+       ORDER BY is_directory DESC, file_name ASC`,
+    )
+    .all(agentId, dirPath);
+}
+
+/**
+ * Get the complete directory tree as JSON (hierarchical).
+ * Used for display in VS Code sidebar and for searching.
+ */
+function getDirectoryTreeAsJson(agentId) {
+  const entries = getDb()
+    .prepare(
+      `SELECT path, file_name, is_directory, parent_path
+       FROM directory_tree
+       WHERE agent_id = ?
+       ORDER BY path ASC`,
+    )
+    .all(agentId);
+
+  const fileLocations = getDb()
+    .prepare(
+      `SELECT id, discovered_path
+       FROM file_locations
+       WHERE agent_id = ? AND exists_flag = 1
+       ORDER BY id DESC`,
+    )
+    .all(agentId);
+
+  const fileContentLocationIds = new Set(
+    getDb()
+      .prepare(
+        `SELECT DISTINCT file_location_id
+         FROM file_contents`,
+      )
+      .all()
+      .map((r) => r.file_location_id),
+  );
+
+  const fileMetaByPath = new Map();
+  for (const fl of fileLocations) {
+    const p = String(fl.discovered_path || "").replace(/\//g, "\\");
+    if (!fileMetaByPath.has(p)) {
+      fileMetaByPath.set(p, {
+        file_location_id: fl.id,
+        has_cached_content: fileContentLocationIds.has(fl.id),
+      });
+    }
+  }
+
+  // Build hierarchy
+  const root = {
+    name: "C:",
+    type: "directory",
+    children: [],
+    path: "C:",
+  };
+  const map = new Map();
+  map.set("C:", root);
+
+  function normalizePath(winPath) {
+    return String(winPath || "").replace(/\//g, "\\");
+  }
+
+  function computeParent(winPath) {
+    const normalized = String(winPath || "").replace(/\//g, "\\");
+    const parts = normalized.split("\\").filter(Boolean);
+    if (parts.length <= 1) return "C:";
+    return parts.slice(0, -1).join("\\");
+  }
+
+  function nodeNameFromPath(winPath) {
+    const parts = normalizePath(winPath).split("\\").filter(Boolean);
+    return parts.length > 0 ? parts[parts.length - 1] : winPath;
+  }
+
+  function addChild(parent, child) {
+    if (!parent.children) parent.children = [];
+    if (!parent.children.some((c) => c.path === child.path)) {
+      parent.children.push(child);
+    }
+  }
+
+  function ensureDirectoryNode(dirPath) {
+    const normalizedDir = normalizePath(dirPath);
+    if (map.has(normalizedDir)) return map.get(normalizedDir);
+    if (normalizedDir === "C:") return root;
+
+    const parentPath = computeParent(normalizedDir);
+    const parent = ensureDirectoryNode(parentPath);
+
+    const dirNode = {
+      name: nodeNameFromPath(normalizedDir),
+      type: "directory",
+      path: normalizedDir,
+      children: [],
+      synthetic: true,
+    };
+    map.set(normalizedDir, dirNode);
+    addChild(parent, dirNode);
+    return dirNode;
+  }
+
+  for (const entry of entries) {
+    const normalizedPath = normalizePath(entry.path || "");
+    const parentPath = computeParent(normalizedPath);
+
+    if (entry.is_directory) {
+      const dirNode = ensureDirectoryNode(normalizedPath);
+      dirNode.synthetic = false;
+      dirNode.name = nodeNameFromPath(normalizedPath);
+      continue;
+    }
+
+    const parent = ensureDirectoryNode(parentPath);
+    const meta = fileMetaByPath.get(normalizedPath) || null;
+    const fileNode = {
+      name: nodeNameFromPath(normalizedPath),
+      type: "file",
+      path: normalizedPath,
+      file_location_id: meta ? meta.file_location_id : null,
+      has_cached_content: meta ? meta.has_cached_content : false,
+    };
+    map.set(normalizedPath, fileNode);
+    addChild(parent, fileNode);
+  }
+
+  return root;
+}
+
+/**
+ * Get all known files discovered on an agent (for context injection).
+ * Returns most recently verified files that exist.
+ */
+function getKnownFilesForContextInjection(agentId, limit = 10) {
+  return getDb()
+    .prepare(
+      `SELECT DISTINCT file_name, discovered_path, last_verified, is_text_file
+       FROM file_locations
+       WHERE agent_id = ? AND exists_flag = 1 AND is_text_file = 1
+       ORDER BY last_verified DESC
+       LIMIT ?`,
+    )
+    .all(agentId, limit);
+}
+
 module.exports = {
   upsertAgent,
   listAgents,
@@ -176,4 +526,17 @@ module.exports = {
   saveFileChange,
   getFileChanges,
   getFileChangeById,
+  getKnownFileLocations,
+  recordFileLocation,
+  updateFileLocationVerification,
+  markFileLocationsNotFound,
+  storeFileContent,
+  getFileContentRanges,
+  getCachedFileContent,
+  getFirstBytesOfFile,
+  updateFileMetadata,
+  recordDirectoryTreeEntry,
+  getDirectoryContents,
+  getDirectoryTreeAsJson,
+  getKnownFilesForContextInjection,
 };

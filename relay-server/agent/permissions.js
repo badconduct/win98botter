@@ -119,11 +119,36 @@ class PermissionsManager {
    * or from the VB6 GUI via POST /control.
    */
   update(permObj) {
+    const toolLevelToCategory = {
+      read_file: "file_read",
+      write_file: "file_write",
+      delete_file: "file_write",
+      list_processes: "execute",
+      kill_process: "process_kill",
+      run_command: "execute",
+      read_registry: "registry_read",
+      write_registry: "registry_write",
+      read_port: "hardware_io",
+      write_port: "hardware_io",
+      load_vxd: "hardware_io",
+      serial: "serial",
+      scheduler: "scheduler",
+      audio: "system",
+      display: "system",
+    };
+
     for (const [key, val] of Object.entries(permObj)) {
+      const boolVal = Boolean(
+        val === true || val === 1 || val === "1" || val === "true",
+      );
+
       if (key in this._perms) {
-        this._perms[key] = Boolean(
-          val === true || val === 1 || val === "1" || val === "true",
-        );
+        this._perms[key] = boolVal;
+        continue;
+      }
+
+      if (key in toolLevelToCategory) {
+        this._perms[toolLevelToCategory[key]] = boolVal;
       }
     }
   }
@@ -153,6 +178,35 @@ class PermissionsManager {
 
   getAll() {
     return { ...this._perms };
+  }
+
+  /**
+   * Return permissions in tool-level format for sending to Win98 agent.
+   * The agent expects tool-level keys (read_file, write_file, run_command, etc.)
+   * not category-level keys (file_read, file_write, execute, etc.)
+   */
+  getAsToolLevel() {
+    const toolLevel = {};
+
+    // Map categories back to tool-level keys in the same order as the agent sends them
+    toolLevel.read_file = this._perms.file_read;
+    toolLevel.write_file = this._perms.file_write;
+    toolLevel.delete_file = this._perms.file_write;
+    toolLevel.list_processes = this._perms.execute;
+    toolLevel.kill_process = this._perms.process_kill;
+    toolLevel.run_command = this._perms.execute;
+    toolLevel.read_registry = this._perms.registry_read;
+    toolLevel.write_registry = this._perms.registry_write;
+    toolLevel.read_port = this._perms.hardware_io;
+    toolLevel.write_port = this._perms.hardware_io;
+    toolLevel.load_vxd = this._perms.hardware_io;
+    toolLevel.modify_sysconfig = this._perms.file_write;
+    toolLevel.serial = this._perms.serial;
+    toolLevel.scheduler = this._perms.scheduler;
+    toolLevel.audio = this._perms.system;
+    toolLevel.display = this._perms.system;
+
+    return toolLevel;
   }
 }
 

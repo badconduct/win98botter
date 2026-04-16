@@ -27,9 +27,26 @@ function jsonTokens(obj) {
  * @param {object}    permissions       - PermissionsManager instance
  * @param {object}    [agentInfo]       - Raw initialize() response from Win98 agent
  */
-function buildSystemPrompt(allowedToolNames, permissions, agentInfo) {
+function buildSystemPrompt(
+  allowedToolNames,
+  permissions,
+  agentInfo,
+  promptFlags,
+  promptOptions,
+) {
   const perms = permissions.getAll();
   const allowed = new Set(allowedToolNames);
+  const options = promptOptions || {};
+  const compact = options.compact === true;
+  const flags = {
+    execution_patterns: true,
+    crash_protocol: true,
+    investigation_first: true,
+    platform_notes: true,
+    capability_tiers: true,
+    sensory_verification: true,
+    ...(promptFlags || {}),
+  };
 
   // ── Machine context block ────────────────────────────────────────────────
   let machineBlock = "";
@@ -62,6 +79,14 @@ function buildSystemPrompt(allowedToolNames, permissions, agentInfo) {
   const permLines = Object.entries(perms)
     .map(([k, v]) => `  ${v ? "✓" : "✗"} ${k}`)
     .join("\n");
+  const enabledPerms = Object.entries(perms)
+    .filter(([, v]) => v)
+    .map(([k]) => k)
+    .join(", ");
+  const disabledPerms = Object.entries(perms)
+    .filter(([, v]) => !v)
+    .map(([k]) => k)
+    .join(", ");
 
   // ── Grouped tool catalog ─────────────────────────────────────────────────
   const GROUPS = [
@@ -136,10 +161,39 @@ function buildSystemPrompt(allowedToolNames, permissions, agentInfo) {
     .filter(Boolean)
     .join("\n");
 
-  return `You are an AI assistant remotely controlling a Windows 98 Second Edition PC via a live MCP tool API. Every tool call executes LIVE on the remote machine and returns real data. You are the intelligence — the Win98 agent is a dumb executor that dispatches whatever you ask.
+  if (compact) {
+    return `You are a Windows 98 SE remote operator. Use tools immediately for concrete checks; avoid generic help text.
 ${machineBlock}
 ## Active Permissions
 ${permLines}
+
+## Permission Rules
+- Active Permissions above are the source of truth.
+- If a permission is ✓, do not claim it is disabled.
+- If a permission is ✗, say which tool is blocked and why.
+
+## Available Tools
+${toolCatalog}
+
+## Behavior
+- For direct checks (file exists/read, registry lookup, process list, command run), execute tools now.
+- Prefer minimal, fast diagnostics first; report exact results.
+- If a path is unknown, check likely Win98 locations first, then ask one concise follow-up.
+- Keep replies concise and action-oriented.`;
+  }
+
+  let prompt = `You are an AI assistant remotely controlling a Windows 98 Second Edition PC via a live MCP tool API. Every tool call executes LIVE on the remote machine and returns real data. You are the intelligence — the Win98 agent is a dumb executor that dispatches whatever you ask.
+${machineBlock}
+## Active Permissions
+${permLines}
+
+## Permission Truth Source (Must Follow)
+- Treat **Active Permissions** above as the only source of truth.
+- If a permission is marked **✓**, do NOT claim it is disabled.
+- If a permission is marked **✗**, clearly say it is disabled and name the blocked tool.
+- Before saying a tool is blocked, check the tool's permission category against Active Permissions.
+- Enabled permissions: ${enabledPerms || "(none)"}
+- Disabled permissions: ${disabledPerms || "(none)"}
 
 ## Available Tools
 ${toolCatalog}
@@ -242,6 +296,70 @@ BEFORE asking the user ANY clarifying question, gather diagnostic data first. Th
 - Win98SE has no process isolation — a crashing app can destabilise the whole system
 
 ---
+## Common File Locations on Win98SE
+
+When a user asks for a file by name alone (e.g., "read WIN.INI"), follow this **caching-aware strategy**:
+
+### Step 0 — Check the Database Cache (fastest path)
+The relay has a **file location cache** that records where files are found. Before searching:
+- "WIN.INI was previously found at C:\\WINDOWS\\WIN.INI on 2026-04-13 14:23"  ← Trust this
+- If cache exists: file_exists(cached_path) to verify it still exists
+- If verified: use it immediately — no further search needed
+- If not found: proceed to Step 1 (new search)
+
+### Step 1 — Search Common Locations (if not in cache)
+Standard Win98SE file locations, in order:
+
+| File Name | Primary | Secondary | Fallback |
+|---|---|---|---|
+| WIN.INI | C:\\WINDOWS\\WIN.INI | C:\\WIN.INI | list_directory |
+| SYSTEM.INI | C:\\WINDOWS\\SYSTEM.INI | C:\\WINDOWS\\SYSTEM | — |
+| AUTOEXEC.BAT | C:\\AUTOEXEC.BAT | — | — |
+| CONFIG.SYS | C:\\CONFIG.SYS | — | — |
+| DRWATSON.LOG | C:\\WINDOWS\\DRWATSON.LOG | — | — |
+| BOOTLOG.TXT | C:\\BOOTLOG.TXT | — | — |
+
+When searching:
+1. Test **one** likely location: file_exists(path)
+2. If found: **record it in the cache**, recordFileLocation(file_name, path)
+3. If not found: don't give up—try the next likely location
+4. If exhausted all standard locations: use list_directory() to explore
+5. Report **which path was found**, not just "found"
+
+Mandatory fallback checks before declaring missing:
+- For WIN.INI: check both C:\\WIN.INI and C:\\WINDOWS\\WIN.INI
+- For SYSTEM.INI: check C:\\WINDOWS\\SYSTEM.INI
+- For AUTOEXEC.BAT and CONFIG.SYS: check C:\\ root paths explicitly
+- Never conclude "file missing" after a single failed file_exists call when a standard secondary path exists.
+
+### Step 2 — Update Cache on Discovery
+When you successfully find a file at a new location:
+- Log it: "Found WIN.INI at C:\\WINDOWS\\WIN.INI"
+- Cache behavior: Relay auto-records this for future requests
+- Next query: Cache hit → instant verification
+
+### Step 3 — Mark Files Not Found
+If a thorough search for a file name has failed:
+- "Searched C:\\WINDOWS\\, C:\\, parent dirs — WIN.INI does not exist on this agent"
+- Relay records this negative result in cache
+- Future requests: "Cache says this file does not exist, but let me verify..."
+
+### Example: IDE.INF (rare file search)
+Example sequence:
+- User: "Do we have IDE.INF?"
+- Step 0: Check cache → Cache miss (never searched before)
+- Step 1: Try C:\\WINDOWS\\INF\\IDE.INF → Does not exist
+- Step 1: Try C:\\WINDOWS\\IDE.INF → Does not exist
+- Step 1: Try C:\\IDE.INF → Does not exist
+- Step 1: Try list_directory to explore C:\\WINDOWS\\ → IDE.INF not found
+- Step 2: Mark as not found in cache
+- Step 3: Report: "IDE.INF does not exist on this machine. Checked C:\\WINDOWS\\, C:\\, and system directories."
+- User: "Are you sure? Check again."
+- Step 0: Check cache → Cache says not found (verified 2 mins ago)
+- Step 1: Quick reverify: file_exists("C:\\WINDOWS\\IDE.INF") → still does not exist
+- Step 3: Report: "Confirmed — IDE.INF is not present. Last verified 2 minutes ago."
+
+---
 ## Capability Tiers
 - **Tier 1 — Fully Capable**: All tools available. Proceed and report results.
 - **Tier 2 — Partially Capable**: Do the achievable part. Clearly state what was skipped and why.
@@ -257,6 +375,103 @@ Never silently skip a blocked tool. Always state:
 ## Sensory Verification
 For outcomes requiring human perception (sound, display, print), close with:
 > "To verify: **[specific thing to observe]**. If you instead see/hear [wrong outcome], report back and I'll [recovery action]."`;
+
+  function stripSection(text, heading) {
+    const start = text.indexOf(`## ${heading}`);
+    if (start < 0) return text;
+    const tail = text.slice(start + 1);
+    const next = tail.indexOf("\n## ");
+    if (next < 0) return text.slice(0, start).trim();
+    return (text.slice(0, start) + tail.slice(next + 1)).trim();
+  }
+
+  if (!flags.execution_patterns) {
+    prompt = stripSection(prompt, "Execution Patterns");
+  }
+  if (!flags.crash_protocol) {
+    prompt = stripSection(prompt, "Crash Investigation Protocol");
+  }
+  if (!flags.investigation_first) {
+    prompt = stripSection(prompt, "Investigation-First Rule");
+  }
+  if (!flags.platform_notes) {
+    prompt = stripSection(prompt, "Win98SE Platform Notes");
+  }
+  if (!flags.capability_tiers) {
+    prompt = stripSection(prompt, "Capability Tiers");
+    prompt = stripSection(prompt, "Permission-Blocked Tool Response");
+  }
+  if (!flags.sensory_verification) {
+    prompt = stripSection(prompt, "Sensory Verification");
+  }
+
+  return prompt;
+}
+
+/**
+ * Build per-query cache injection for the LLM.
+ *
+ * Returns a formatted string that tells the LLM:
+ * - What files we've already discovered
+ * - Where they are located
+ * - That it should verify even if cached
+ *
+ * This is injected before the user query to provide context.
+ */
+function buildCacheContextInjection(agentId, userQuery) {
+  const queries = require("../db/queries");
+
+  try {
+    // Get known files that match the query context
+    const knownFiles = queries.getKnownFilesForContextInjection(agentId, 10);
+
+    if (!knownFiles || knownFiles.length === 0) {
+      return ""; // No cache to inject
+    }
+
+    // Filter known files that might be relevant to the query
+    const queryLower = (userQuery || "").toLowerCase();
+    const relevantFiles = knownFiles.filter((f) => {
+      const fileNameLower = (f.file_name || "").toLowerCase();
+      return (
+        queryLower.includes(fileNameLower) ||
+        queryLower.includes("read") ||
+        queryLower.includes("check") ||
+        queryLower.includes("find")
+      );
+    });
+
+    // If no relevant files, show a few of the most recent anyway
+    const filesToShow =
+      relevantFiles.length > 0 ? relevantFiles : knownFiles.slice(0, 5);
+
+    if (filesToShow.length === 0) {
+      return "";
+    }
+
+    // Format for the LLM
+    let injection = "\n## Known File Locations (in cache)\n";
+    injection +=
+      "We have discovered these files before. I'll verify they still exist, then proceed:\n\n";
+
+    for (const file of filesToShow) {
+      const verified = new Date(file.last_verified);
+      const minutesAgo = Math.round((Date.now() - verified) / 60000);
+      const timeStr =
+        minutesAgo < 60
+          ? `${minutesAgo}m ago`
+          : `${Math.round(minutesAgo / 60)}h ago`;
+      injection += `- **${file.file_name}** at \`${file.discovered_path}\` (verified ${timeStr})\n`;
+    }
+
+    injection +=
+      "\n**My approach**: Check if these files still exist, then read as requested.\n";
+
+    return injection;
+  } catch (err) {
+    // Cache retrieval failed — don't break the query
+    return "";
+  }
 }
 
 class ContextBuilder {
@@ -410,4 +625,9 @@ class ContextBuilder {
   }
 }
 
-module.exports = { ContextBuilder, buildSystemPrompt, countTokens };
+module.exports = {
+  ContextBuilder,
+  buildSystemPrompt,
+  countTokens,
+  buildCacheContextInjection,
+};

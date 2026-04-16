@@ -1,8 +1,8 @@
 /*
- * ipc_ops.h - Named pipe server for local IPC
+ * ipc_ops.h - Local TCP server for local IPC
  *
  * Allows local CLI commands and VB6 GUI to communicate with the MCP service
- * via named pipes (\\.\pipe\Win98MCPServer).
+ * via local sockets (127.0.0.1:IPC_PORT).
  *
  * The server runs in a background thread when the main service is active.
  */
@@ -11,14 +11,9 @@
 #define IPC_OPS_H
 
 #include <windows.h>
+#include <winsock.h>
 
-typedef struct {
-    HANDLE hPipe;
-    char   buf[8192];
-    int    buf_len;
-} IPC_Client;
-
-/* Start named pipe server in a background thread */
+/* Start TCP server in a background thread */
 HANDLE ipc_server_start(void);
 
 /* Stop the IPC server */

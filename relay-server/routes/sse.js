@@ -9,7 +9,7 @@
  * Query: ?session_id=s-1&message=...
  */
 async function sseRoutes(fastify, opts) {
-  const { llm, staging, registry, tokenBudget } = opts;
+  const { llm, staging, registry, tokenBudget, phase1Store } = opts;
   const AgentLoop = require("../agent/loop");
   const queries = require("../db/queries");
 
@@ -30,6 +30,7 @@ async function sseRoutes(fastify, opts) {
     },
     async (request, reply) => {
       const { session_id, message, agent_id } = request.query;
+      let selectedAgentId = agent_id;
 
       reply.raw.setHeader("Content-Type", "text/event-stream");
       reply.raw.setHeader("Cache-Control", "no-cache");
@@ -46,11 +47,18 @@ async function sseRoutes(fastify, opts) {
         reply.raw.end();
         return;
       }
-      const { connection, permissions } = entry;
+      if (!selectedAgentId && entry.agentId) {
+        selectedAgentId = entry.agentId;
+      }
+      const { connection, permissions, staging } = entry;
+
+      if (!selectedAgentId) {
+        selectedAgentId = connection.agentId;
+      }
 
       queries.createSession(
         session_id,
-        connection.agentId,
+        selectedAgentId,
         connection.remoteAddress,
         llm.model,
       );
@@ -60,6 +68,11 @@ async function sseRoutes(fastify, opts) {
         staging,
         permissions,
         fastify.log,
+        {
+          promptFlags: entry.promptFlags || null,
+          phase1Store,
+          selectedAgentId,
+        },
       );
 
       try {

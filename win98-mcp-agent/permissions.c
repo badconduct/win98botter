@@ -81,6 +81,7 @@ int permission_allowed(const char *tool_name)
     if (strcmp(tool_name, "read_file")         == 0 ||
         strcmp(tool_name, "grep_file")          == 0 ||
         strcmp(tool_name, "get_file_info")      == 0 ||
+        strcmp(tool_name, "file_exists")        == 0 ||
         strcmp(tool_name, "list_directory")     == 0 ||
         strcmp(tool_name, "list_backups")       == 0 ||
         strcmp(tool_name, "get_history")        == 0 ||
@@ -183,6 +184,49 @@ int permission_allowed(const char *tool_name)
 
     /* Unknown tool — deny by default */
     return 0;
+}
+
+/*
+ * Update in-memory permissions from a JSON object sent by the relay.
+ * Keys match the field names in permissions.ini.  Unrecognised keys are
+ * silently ignored.  Does NOT write back to disk — use permissions_load()
+ * to persist across restarts.
+ */
+void permissions_set_from_json(cJSON *obj)
+{
+    cJSON *item;
+    int   val;
+
+    if (!obj) return;
+
+    /* Ensure struct is initialised before we patch it */
+    if (!g_perms_loaded) permissions_load(NULL);
+
+#define SET_PERM(field, key) \
+    item = cJSON_GetObjectItemCaseSensitive(obj, key); \
+    if (item) { \
+        val = cJSON_IsTrue(item) ? 1 : (cJSON_IsNumber(item) ? (item->valueint != 0) : 0); \
+        g_perms.field = val; \
+    }
+
+    SET_PERM(read_file,        "read_file")
+    SET_PERM(write_file,       "write_file")
+    SET_PERM(delete_file,      "delete_file")
+    SET_PERM(list_processes,   "list_processes")
+    SET_PERM(kill_process,     "kill_process")
+    SET_PERM(run_command,      "run_command")
+    SET_PERM(read_registry,    "read_registry")
+    SET_PERM(write_registry,   "write_registry")
+    SET_PERM(read_port,        "read_port")
+    SET_PERM(write_port,       "write_port")
+    SET_PERM(load_vxd,         "load_vxd")
+    SET_PERM(modify_sysconfig, "modify_sysconfig")
+    SET_PERM(serial,           "serial")
+    SET_PERM(scheduler,        "scheduler")
+    SET_PERM(audio,            "audio")
+    SET_PERM(display,          "display")
+
+#undef SET_PERM
 }
 
 /* Build the "permissions" JSON object for the initialize response.         */

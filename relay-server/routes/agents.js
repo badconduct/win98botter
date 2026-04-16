@@ -13,14 +13,17 @@ async function agentsRoutes(fastify, opts) {
   // ── GET /api/agents ────────────────────────────────────────────────────────
   fastify.get("/api/agents", async (_req, reply) => {
     const liveAgents = registry.list();
-    const liveIds = new Set(liveAgents.map((a) => a.agentId));
+    const liveCanonicalIds = new Set(
+      liveAgents.map((a) => a.canonicalAgentId || a.agentId),
+    );
 
     // Merge DB records for agents that have connected before but are now offline
     const dbAgents = queries.listAgents();
     const offline = dbAgents
-      .filter((a) => !liveIds.has(a.agent_id))
+      .filter((a) => !liveCanonicalIds.has(a.agent_id))
       .map((a) => ({
         agentId: a.agent_id,
+        canonicalAgentId: a.agent_id,
         hostname: a.hostname,
         host: a.ip_address,
         connected: false,
@@ -55,6 +58,7 @@ async function agentsRoutes(fastify, opts) {
 
       return reply.send({
         agentId: row.agent_id,
+        canonicalAgentId: row.agent_id,
         hostname: row.hostname,
         host: row.ip_address,
         connected: false,
@@ -88,7 +92,9 @@ async function agentsRoutes(fastify, opts) {
         }
       }
 
-      queries.deleteAgent(agentId);
+      if (!agentId.includes("#")) {
+        queries.deleteAgent(agentId);
+      }
       return reply.send({ success: true, agentId });
     },
   );

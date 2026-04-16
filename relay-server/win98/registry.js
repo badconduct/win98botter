@@ -3,11 +3,11 @@
 /**
  * AgentRegistry — tracks all currently connected (and recently seen) Win98 agents.
  *
- * Each entry keyed by agentId (MachineGuid or IP fallback) holds:
- *   { connection, watchdog, agentLoop, permissions }
+ * Each entry keyed by a registry agentId (tab/connection id) holds:
+ *   { connection, watchdog, agentLoop, permissions, canonicalAgentId, promptFlags }
  *
  * Also maintains an in-memory ring-buffer of log lines for the GUI's log SSE
- * endpoint, and a list of SSE response objects to fan-out logs in real time.
+ * endpoint, and a list of SSE subscribers to fan-out logs in real time.
  */
 
 const MAX_LOG_BUFFER = 500; // keep last 500 log lines in memory
@@ -16,13 +16,30 @@ class AgentRegistry {
   constructor() {
     this._agents = new Map(); // agentId → entry
     this._logBuffer = []; // ring buffer of log strings
-    this._logSubscribers = new Set(); // live SSE reply objects
+    this._logSubscribers = new Set(); // live SSE subscribers: { res, agentId }
   }
 
   // ── Agent management ────────────────────────────────────────────────────────
 
-  register(agentId, { connection, watchdog, agentLoop, permissions }) {
-    this._agents.set(agentId, { connection, watchdog, agentLoop, permissions });
+  register(
+    agentId,
+    {
+      connection,
+      watchdog,
+      agentLoop,
+      permissions,
+      canonicalAgentId,
+      promptFlags,
+    },
+  ) {
+    this._agents.set(agentId, {
+      connection,
+      watchdog,
+      agentLoop,
+      permissions,
+      canonicalAgentId: canonicalAgentId || agentId,
+      promptFlags: promptFlags || null,
+    });
   }
 
   remove(agentId) {
@@ -53,6 +70,7 @@ class AgentRegistry {
       const online = !!entry.connection.connected;
       result.push({
         agentId,
+        canonicalAgentId: entry.canonicalAgentId || agentId,
         hostname: entry.connection.hostname,
         host: entry.connection.remoteAddress,
         connected: online,
@@ -76,11 +94,14 @@ class AgentRegistry {
       this._logBuffer.shift();
     }
 
-    for (const res of this._logSubscribers) {
+    for (const sub of this._logSubscribers) {
       try {
-        res.write(`data: ${line}\n\n`);
+        if (sub.agentId && !this._lineMatchesAgent(line, sub.agentId)) {
+          continue;
+        }
+        sub.res.write(`data: ${line}\n\n`);
       } catch (_) {
-        this._logSubscribers.delete(res);
+        this._logSubscribers.delete(sub);
       }
     }
   }
@@ -90,12 +111,31 @@ class AgentRegistry {
     return this._logBuffer.slice();
   }
 
-  addLogSubscriber(res) {
-    this._logSubscribers.add(res);
+  addLogSubscriber(res, agentId) {
+    this._logSubscribers.add({ res, agentId: agentId || null });
   }
 
   removeLogSubscriber(res) {
-    this._logSubscribers.delete(res);
+    for (const sub of this._logSubscribers) {
+      if (sub.res === res) {
+        this._logSubscribers.delete(sub);
+      }
+    }
+  }
+
+  _lineMatchesAgent(line, agentId) {
+    if (!agentId) return true;
+    if (!line) return false;
+
+    try {
+      const obj = JSON.parse(line);
+      if (obj.agentId && String(obj.agentId) === agentId) return true;
+      if (obj.canonicalAgentId && String(obj.canonicalAgentId) === agentId)
+        return true;
+      return false;
+    } catch (_) {
+      return line.indexOf(agentId) !== -1;
+    }
   }
 }
 

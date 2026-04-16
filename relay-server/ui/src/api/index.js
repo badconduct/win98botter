@@ -49,6 +49,17 @@ export const api = {
     if (agentId) q.set("agent_id", agentId);
     return request("GET", `/api/system-prompt?${q}`);
   },
+  setSystemPromptFlags: (agentId, flags) =>
+    request("POST", "/api/system-prompt/flags", {
+      agent_id: agentId,
+      flags,
+    }),
+  setAgentPermissions: (agentId, permissions) =>
+    request("POST", "/control", {
+      action: "permissions",
+      agent_id: agentId,
+      permissions,
+    }),
 
   // Control
   control: (body) => request("POST", "/control", body),
@@ -76,6 +87,14 @@ export const api = {
     if (limit) q.set("limit", String(limit));
     return request("GET", `/api/map/files/read-capture?${q}`);
   },
+  // File activity directory map
+  getFileActivityTree: (agentId) =>
+    request("GET", `/api/file-activity/tree/${encodeURIComponent(agentId)}`),
+  getFileActivityContent: (agentId, fileLocationId) =>
+    request(
+      "GET",
+      `/api/file-activity/content/${encodeURIComponent(agentId)}/${encodeURIComponent(fileLocationId)}`,
+    ),
   captureRegistry: (body) => request("POST", "/api/map/registry/capture", body),
   getCachedRegistry: (agentId, keyPath) => {
     const q = new URLSearchParams();

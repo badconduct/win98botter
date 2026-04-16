@@ -15,6 +15,9 @@
 #define CONNECT_RETRY_COUNT    3
 #define CONNECT_RETRY_DELAY_MS 2000
 
+/* ── Local IPC ───────────────────────────────────────────────────────────── */
+#define IPC_PORT               9421
+
 /* ── TCP framing ─────────────────────────────────────────────────────────── */
 /* Each JSON-RPC message is prefixed with a 4-byte big-endian uint32 length. */
 #define MSG_LENGTH_PREFIX_BYTES 4
@@ -44,7 +47,8 @@
 
 /* ── Versions ────────────────────────────────────────────────────────────── */
 #define SERVER_NAME    "Win98MCPAgent"
-#define SERVER_VERSION "0.1.0"
+/* Update SERVER_VERSION whenever shipping behavior or protocol changes. */
+#define SERVER_VERSION "0.8"
 #define MCP_PROTOCOL   "1.0"
 
 /* ── WIN32 target ────────────────────────────────────────────────────────── */
@@ -54,6 +58,19 @@
 
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0400    /* Windows 98 / NT4 target */
+#endif
+
+/* ── Legacy SDK compatibility (VC6/old headers) ────────────────────────── */
+#ifndef INVALID_FILE_ATTRIBUTES
+#define INVALID_FILE_ATTRIBUTES ((DWORD)-1)
+#endif
+
+#ifndef INVALID_SET_FILE_POINTER
+#define INVALID_SET_FILE_POINTER ((DWORD)-1)
+#endif
+
+#ifndef DWORD_PTR
+#define DWORD_PTR DWORD
 #endif
 
 #endif /* CONFIG_H */

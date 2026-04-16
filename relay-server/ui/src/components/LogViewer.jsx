@@ -13,7 +13,7 @@ const DEFAULT_FILTERS = {
  * LogViewer — subscribes to GET /api/logs (SSE) and renders a scrolling
  * terminal-style pane. Automatically reconnects on disconnect.
  */
-export default function LogViewer() {
+export default function LogViewer({ agentId }) {
   const [lines, setLines] = useState([]);
   const [paused, setPaused] = useState(false);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
@@ -29,7 +29,10 @@ export default function LogViewer() {
 
     function connect() {
       if (dead) return;
-      es = new EventSource("/api/logs");
+      const url = agentId
+        ? `/api/logs?agent_id=${encodeURIComponent(agentId)}`
+        : "/api/logs";
+      es = new EventSource(url);
 
       es.onmessage = (e) => {
         const line = e.data;
@@ -54,7 +57,7 @@ export default function LogViewer() {
       dead = true;
       es?.close();
     };
-  }, []);
+  }, [agentId]);
 
   // Auto-scroll when not paused
   useEffect(() => {

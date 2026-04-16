@@ -23,6 +23,12 @@
 #include <time.h>
 #include <stdarg.h>
 
+#ifdef _MSC_VER
+#pragma comment(lib, "wsock32.lib")
+#endif
+
+#include <tlhelp32.h>
+
 #include "cJSON.h"
 #include "config.h"
 #include "permissions.h"
@@ -76,7 +82,57 @@ static int parse_bool_str(const char *value, int default_value)
     return default_value;
 }
 
-static void agent_logf(const char *level, const char *fmt, ...)
+static int register_uninstall_entry(const char *exe_path)
+{
+    HKEY hk;
+    DWORD disp;
+    DWORD one = 1;
+    char uninstall_cmd[MAX_PATH + 32];
+    const char *key_path = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Win98MCPServer";
+    const char *display_name = "Win98 MCP Server";
+    const char *publisher = "badconduct";
+
+    if (!exe_path || !exe_path[0]) return 0;
+
+    wsprintfA(uninstall_cmd, "\"%s\" -uninstall", exe_path);
+
+    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE,
+                        key_path,
+                        0,
+                        NULL,
+                        REG_OPTION_NON_VOLATILE,
+                        KEY_SET_VALUE,
+                        NULL,
+                        &hk,
+                        &disp) != ERROR_SUCCESS) {
+        return 0;
+    }
+
+    RegSetValueExA(hk, "DisplayName", 0, REG_SZ,
+                   (const BYTE *)display_name, lstrlenA(display_name) + 1);
+    RegSetValueExA(hk, "UninstallString", 0, REG_SZ,
+                   (const BYTE *)uninstall_cmd, lstrlenA(uninstall_cmd) + 1);
+    RegSetValueExA(hk, "DisplayVersion", 0, REG_SZ,
+                   (const BYTE *)SERVER_VERSION, lstrlenA(SERVER_VERSION) + 1);
+    RegSetValueExA(hk, "Publisher", 0, REG_SZ,
+                   (const BYTE *)publisher, lstrlenA(publisher) + 1);
+    RegSetValueExA(hk, "NoModify", 0, REG_DWORD,
+                   (const BYTE *)&one, sizeof(one));
+    RegSetValueExA(hk, "NoRepair", 0, REG_DWORD,
+                   (const BYTE *)&one, sizeof(one));
+
+    RegCloseKey(hk);
+    return 1;
+}
+
+static int remove_uninstall_entry(void)
+{
+    const char *key_path = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Win98MCPServer";
+    LONG rc = RegDeleteKeyA(HKEY_LOCAL_MACHINE, key_path);
+    return (rc == ERROR_SUCCESS || rc == ERROR_FILE_NOT_FOUND);
+}
+
+void agent_logf(const char *level, const char *fmt, ...)
 {
     char message[1024];
     va_list ap;
@@ -400,6 +456,11 @@ static void handle_initialize(SOCKET sock, cJSON *id, cJSON *params)
     HKEY   hkey;
     DWORD  buf_size;
     DWORD  type;
+    cJSON *result;
+    cJSON *server_i;
+    cJSON *startup;
+    cJSON *perms_j;
+    cJSON *tools;
 
     /* Read MachineGuid from registry */
     if (RegOpenKeyEx(HKEY_LOCAL_MACHINE,
@@ -415,11 +476,11 @@ static void handle_initialize(SOCKET sock, cJSON *id, cJSON *params)
     buf_size = (DWORD)sizeof(hostname);
     GetComputerName(hostname, &buf_size);
 
-    cJSON *result   = cJSON_CreateObject();
-    cJSON *server_i = build_server_info();
-    cJSON *startup  = do_startup_check();
-    cJSON *perms_j  = permissions_to_json();
-    cJSON *tools    = build_tools_list();
+    result   = cJSON_CreateObject();
+    server_i = build_server_info();
+    startup  = do_startup_check();
+    perms_j  = permissions_to_json();
+    tools    = build_tools_list();
 
     cJSON_AddStringToObject(result, "machineGuid", machine_guid);
     cJSON_AddStringToObject(result, "hostname",    hostname);
@@ -504,9 +565,12 @@ static void dispatch_tools_call(SOCKET sock, cJSON *id, cJSON *params)
 {
     cJSON *j_name;
     cJSON *j_args;
+    cJSON *args_safe;
     const char *tool_name;
     ToolEntry  *entry;
     cJSON      *result;
+    DWORD       t0;
+    DWORD       t1;
 
     j_name = cJSON_GetObjectItemCaseSensitive(params, "name");
     j_args = cJSON_GetObjectItemCaseSensitive(params, "arguments");
@@ -516,9 +580,13 @@ static void dispatch_tools_call(SOCKET sock, cJSON *id, cJSON *params)
         return;
     }
     tool_name = j_name->valuestring;
+    t0 = GetTickCount();
+
+    agent_logf("INFO", "RPC tools/call requested: %s", tool_name);
 
     /* Check permissions */
     if (!permission_allowed(tool_name)) {
+        agent_logf("WARN", "RPC tools/call denied by permissions: %s", tool_name);
         send_error(sock, id, -32603, "permission_denied");
         return;
     }
@@ -526,18 +594,26 @@ static void dispatch_tools_call(SOCKET sock, cJSON *id, cJSON *params)
     /* Look up tool */
     for (entry = g_tools; entry->name != NULL; entry++) {
         if (strcmp(entry->name, tool_name) == 0) {
-            cJSON *args_safe = j_args ? j_args : cJSON_CreateObject();
+            args_safe = j_args ? j_args : cJSON_CreateObject();
             result = entry->fn(args_safe);
             if (!j_args) cJSON_Delete(args_safe);
             if (!result) {
+                t1 = GetTickCount();
+                agent_logf("ERROR", "RPC tools/call failed: %s returned null (%lu ms)",
+                           tool_name, (unsigned long)(t1 - t0));
                 send_error(sock, id, -32603, "tool returned null");
                 return;
             }
+
+            t1 = GetTickCount();
+            agent_logf("INFO", "RPC tools/call completed: %s (%lu ms)",
+                       tool_name, (unsigned long)(t1 - t0));
             send_result(sock, id, result);
             return;
         }
     }
 
+    agent_logf("WARN", "RPC tools/call unknown tool: %s", tool_name);
     send_error(sock, id, -32601, "unknown_tool");
 }
 
@@ -548,8 +624,13 @@ static void dispatch(SOCKET sock, cJSON *req)
     cJSON *j_method = cJSON_GetObjectItemCaseSensitive(req, "method");
     cJSON *j_id     = cJSON_GetObjectItemCaseSensitive(req, "id");
     cJSON *j_params = cJSON_GetObjectItemCaseSensitive(req, "params");
+    cJSON *result;
+    cJSON *j_path;
+    const char *path;
 
     if (!cJSON_IsString(j_method)) return;
+
+    agent_log_debug("RPC method received: %s", j_method->valuestring);
 
     if (strcmp(j_method->valuestring, "initialize") == 0) {
         handle_initialize(sock, j_id, j_params);
@@ -560,20 +641,30 @@ static void dispatch(SOCKET sock, cJSON *req)
         }
         dispatch_tools_call(sock, j_id, j_params);
     } else if (strcmp(j_method->valuestring, "tools/list") == 0) {
-        cJSON *result = cJSON_CreateObject();
+        result = cJSON_CreateObject();
         cJSON_AddItemToObject(result, "tools", build_tools_list());
         send_result(sock, j_id, result);
     } else if (strcmp(j_method->valuestring, "permissions/update") == 0) {
         if (j_params) {
             /* Reload permissions from file (params may specify new path) */
-            cJSON *j_path = cJSON_GetObjectItemCaseSensitive(j_params, "path");
-            const char *path = cJSON_IsString(j_path) ? j_path->valuestring
-                                                       : PERMISSIONS_INI;
+            j_path = cJSON_GetObjectItemCaseSensitive(j_params, "path");
+            path = cJSON_IsString(j_path) ? j_path->valuestring
+                                          : PERMISSIONS_INI;
             permissions_load(path);
+        }
+        send_result(sock, j_id, permissions_to_json());
+    } else if (strcmp(j_method->valuestring, "set_permissions") == 0) {
+        /* Relay runtime override — update in-memory permissions directly.
+         * params: { read_file: 1, run_command: 0, ... }
+         * Does NOT write to disk; permissions.ini is the persistent record. */
+        if (j_params) {
+            permissions_set_from_json(j_params);
+            agent_logf("INFO", "RPC set_permissions applied.");
         }
         send_result(sock, j_id, permissions_to_json());
     } else {
         /* Ignore unknown notifications; send error for requests */
+        agent_logf("WARN", "RPC unknown method: %s", j_method->valuestring);
         if (j_id && !cJSON_IsNull(j_id))
             send_error(sock, j_id, -32601, "method_not_found");
     }
@@ -733,22 +824,30 @@ int main(int argc, char *argv[])
     int     reconnect = 1;
     int     run_as_service = 0;
     int     i;
+    HANDLE  hIPCServer;
+    HANDLE  hInstanceMutex;
+
+    typedef DWORD (WINAPI *RSP_t)(DWORD, DWORD);
 
     /* ── Service-mode flags ───────────────────────────────────────────────
      *
      *  -service   : hide console + register as Win9x background service
      *  -install   : write autorun registry key and exit
+    *  -stop      : stop running server instance and exit
      *  -uninstall : remove autorun registry key and exit
+    *  -version   : print build version and exit
      *
      * Win9x RegisterServiceProcess() hides this process from Ctrl+Alt+Del.
      * Combined with FreeConsole() the agent is completely invisible to the
      * casual user. The relay can still connect and issue commands at any time.
      */
-    typedef DWORD (WINAPI *RSP_t)(DWORD, DWORD);
     for (i = 1; i < argc; i++) {
         if (lstrcmpiA(argv[i], "-cli") == 0) {
             /* CLI mode: send command to IPC pipe and exit immediately */
             return cli_mode_run(argc - i, argv + i);
+        } else if (lstrcmpiA(argv[i], "-version") == 0) {
+            printf("%s %s\n", SERVER_NAME, SERVER_VERSION);
+            return 0;
         } else if (lstrcmpiA(argv[i], "-service") == 0) {
             run_as_service = 1;
         } else if (lstrcmpiA(argv[i], "-install") == 0) {
@@ -756,8 +855,10 @@ int main(int argc, char *argv[])
             char exe_path[MAX_PATH];
             char cmd_line[MAX_PATH + 32];
             HKEY hk;
+            int uninstall_ok;
             GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
             wsprintfA(cmd_line, "\"%s\" -service", exe_path);
+            uninstall_ok = register_uninstall_entry(exe_path);
             if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
                     "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
                     0, KEY_SET_VALUE, &hk) == ERROR_SUCCESS) {
@@ -765,26 +866,115 @@ int main(int argc, char *argv[])
                     (const BYTE *)cmd_line, lstrlenA(cmd_line) + 1);
                 RegCloseKey(hk);
                 MessageBoxA(NULL,
-                    "Win98 MCP Server installed.\nIt will start automatically at next login.",
+                    uninstall_ok
+                        ? "Win98 MCP Server installed.\nIt will start automatically at next login.\nAdded to Add/Remove Programs."
+                        : "Win98 MCP Server installed.\nIt will start automatically at next login.\n(Add/Remove Programs entry failed.)",
                     "MCP Server", MB_OK | MB_ICONINFORMATION);
             } else {
                 MessageBoxA(NULL, "Failed to write registry key.",
                     "MCP Server", MB_OK | MB_ICONERROR);
             }
             return 0;
+        } else if (lstrcmpiA(argv[i], "-stop") == 0) {
+            HANDLE hSnap;
+            PROCESSENTRY32 pe;
+            int killed = 0;
+
+            /* Terminate any running service instance via ToolHelp32 */
+            hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (hSnap != INVALID_HANDLE_VALUE) {
+                pe.dwSize = sizeof(pe);
+                if (Process32First(hSnap, &pe)) {
+                    do {
+                        if (lstrcmpiA(pe.szExeFile, "mcp_server.exe") == 0 &&
+                            pe.th32ProcessID != GetCurrentProcessId()) {
+                            HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE,
+                                                       pe.th32ProcessID);
+                            if (hProc) {
+                                TerminateProcess(hProc, 0);
+                                CloseHandle(hProc);
+                                killed = 1;
+                            }
+                        }
+                    } while (Process32Next(hSnap, &pe));
+                }
+                CloseHandle(hSnap);
+            }
+
+            MessageBoxA(NULL,
+                killed
+                    ? "Win98 MCP Server stopped."
+                    : "No running Win98 MCP Server instance found.",
+                "MCP Server", MB_OK | MB_ICONINFORMATION);
+            return 0;
         } else if (lstrcmpiA(argv[i], "-uninstall") == 0) {
             HKEY hk;
+            HANDLE hSnap;
+            PROCESSENTRY32 pe;
+            int reg_ok = 0;
+            int uninstall_ok = 0;
+            int killed  = 0;
+
+            /* Remove autorun registry key */
             if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
                     "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
                     0, KEY_SET_VALUE, &hk) == ERROR_SUCCESS) {
                 RegDeleteValueA(hk, "Win98MCPServer");
                 RegCloseKey(hk);
+                reg_ok = 1;
+            } else {
                 MessageBoxA(NULL,
-                    "Win98 MCP Server removed from startup.",
+                    "Could not open registry key.\nThe autorun entry may not have been removed.",
+                    "MCP Server", MB_OK | MB_ICONERROR);
+            }
+
+            uninstall_ok = remove_uninstall_entry();
+
+            /* Terminate any running service instance via ToolHelp32 */
+            hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (hSnap != INVALID_HANDLE_VALUE) {
+                pe.dwSize = sizeof(pe);
+                if (Process32First(hSnap, &pe)) {
+                    do {
+                        if (lstrcmpiA(pe.szExeFile, "mcp_server.exe") == 0 &&
+                            pe.th32ProcessID != GetCurrentProcessId()) {
+                            HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE,
+                                                       pe.th32ProcessID);
+                            if (hProc) {
+                                TerminateProcess(hProc, 0);
+                                CloseHandle(hProc);
+                                killed = 1;
+                            }
+                        }
+                    } while (Process32Next(hSnap, &pe));
+                }
+                CloseHandle(hSnap);
+            }
+
+            if (reg_ok) {
+                MessageBoxA(NULL,
+                    killed
+                        ? (uninstall_ok
+                            ? "Win98 MCP Server stopped and removed from startup.\nRemoved from Add/Remove Programs."
+                            : "Win98 MCP Server stopped and removed from startup.\n(Add/Remove Programs cleanup failed.)")
+                        : (uninstall_ok
+                            ? "Win98 MCP Server removed from startup.\n(No running instance found.)\nRemoved from Add/Remove Programs."
+                            : "Win98 MCP Server removed from startup.\n(No running instance found.)\n(Add/Remove Programs cleanup failed.)"),
                     "MCP Server", MB_OK | MB_ICONINFORMATION);
             }
             return 0;
         }
+    }
+
+    /* Single-instance guard: avoid duplicate auto-start/service processes. */
+    hInstanceMutex = CreateMutexA(NULL, FALSE, "Win98MCPAgent.Singleton");
+    if (hInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (!run_as_service) {
+            MessageBoxA(NULL,
+                "Win98 MCP Server is already running.",
+                "MCP Server", MB_OK | MB_ICONINFORMATION);
+        }
+        return 0;
     }
 
     if (run_as_service) {
@@ -824,6 +1014,7 @@ int main(int argc, char *argv[])
     /* Init WinSock */
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         agent_logf("ERROR", "WSAStartup failed: %d.", WSAGetLastError());
+        if (hInstanceMutex) CloseHandle(hInstanceMutex);
         return 1;
     }
     agent_logf("INFO", "WinSock initialized: %s", wsa.szDescription);
@@ -832,11 +1023,12 @@ int main(int argc, char *argv[])
     permissions_load(PERMISSIONS_INI);
     agent_logf("INFO", "Permissions loaded from %s", PERMISSIONS_INI);
 
-    /* Start IPC (named pipe) server if running as service */
-    HANDLE hIPCServer = NULL;
-    if (run_as_service) {
-        hIPCServer = ipc_server_start();
+    /* Start IPC (named pipe) server for local CLI/VB6 commands in all modes. */
+    hIPCServer = ipc_server_start();
+    if (hIPCServer) {
         agent_logf("INFO", "Local IPC server started for CLI/VB6 commands.");
+    } else {
+        agent_logf("WARN", "Local IPC server failed to start.");
     }
 
     /* Reconnect loop */
@@ -862,5 +1054,6 @@ int main(int argc, char *argv[])
     }
 
     WSACleanup();
+    if (hInstanceMutex) CloseHandle(hInstanceMutex);
     return 0;
 }

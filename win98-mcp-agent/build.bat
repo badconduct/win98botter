@@ -30,9 +30,11 @@ echo.
 
 cl.exe %CFLAGS% ^
     mcp_server.c  ^
+    cli_mode.c    ^
     file_ops.c    ^
     exec_ops.c    ^
     ini_ops.c     ^
+    ipc_ops.c     ^
     registry_ops.c ^
     process_ops.c ^
     system_ops.c  ^
@@ -52,9 +54,11 @@ echo.
 link.exe /nologo /SUBSYSTEM:CONSOLE %LFLAGS% ^
     /OUT:%OUT% ^
     mcp_server.obj  ^
+    cli_mode.obj    ^
     file_ops.obj    ^
     exec_ops.obj    ^
     ini_ops.obj     ^
+    ipc_ops.obj     ^
     registry_ops.obj ^
     process_ops.obj ^
     system_ops.obj  ^

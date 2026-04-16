@@ -10,6 +10,14 @@ This README reflects the current implemented state, not a future-only design dra
 
 ---
 
+## Critical Build Requirement
+
+The `win98-mcp-server` binary must be compiled with **Visual Studio 6 (VC6) on Windows 98 SE**.
+
+Do not treat modern toolchain builds (newer MSVC/MinGW) as production-equivalent for real Win98SE deployment. They may build, but can introduce runtime incompatibilities on target systems.
+
+---
+
 ## Current Capabilities
 
 1. Relay, UI, and agent connectivity paths are functional.
@@ -65,12 +73,36 @@ win98botter/
 
 ---
 
+## Sprint Recap (Current State)
+
+1. File location caching is now persisted in relay SQLite and reused in later prompts.
+2. Agent prompt guidance was expanded for Win98 path fallback behavior (for files like `WIN.INI`).
+3. Relay now stores discovered directory structure and serves it via file-activity API routes.
+4. Website File Activity panel now includes an expandable directory map (`+` / `-`) with directories first and files below.
+5. Website map supports cached-file highlighting and inline file preview (when DB content exists).
+6. LLM URL normalization was hardened to avoid malformed endpoint issues.
+7. Chat failure handling was tightened to reduce silent/non-informative failures.
+8. The experimental `vscode-extension/` workspace module was removed; the web dashboard is now the primary UI path.
+
+---
+
 ## Quick Start (Current Dev Flow)
 
 1. Start relay stack (including PostgreSQL) from `relay-server`.
 2. Configure model endpoint/base URL in setup/settings.
-3. Start Win98 agent in desired mode (`normal`, `-service`, or CLI/IPC path).
+3. Build `win98-mcp-server` using **Visual Studio 6 on Windows 98 SE**, then start the agent in the desired mode.
 4. Connect through web dashboard or VB6 client.
+
+**Agent startup flags:**
+
+| Flag                   | Effect                                               |
+| ---------------------- | ---------------------------------------------------- |
+| _(none)_               | Normal foreground mode                               |
+| `-version`             | Print `Win98MCPAgent <version>` and exit             |
+| `-service`             | Run as background Win9x service (hidden, auto-start) |
+| `-install`             | Write autorun registry key and exit                  |
+| `-uninstall`           | Remove autorun registry key and exit                 |
+| `-cli <method> [args]` | Send one command via IPC pipe and exit               |
 
 If using Docker Compose, ensure Postgres environment values match the relay configuration.
 
@@ -80,7 +112,8 @@ If using Docker Compose, ensure Postgres environment values match the relay conf
 
 1. Full Win98SE regression coverage for newly added service/IPC paths is still in progress.
 2. Map cache is at Phase 1 persistence level; deeper diff/merge intelligence is next.
-3. Release packaging and operator runbooks still need completion.
+3. Some historic directory rows may still need re-scan for perfect folder/type fidelity.
+4. Release packaging and operator runbooks still need completion.
 
 ---
 

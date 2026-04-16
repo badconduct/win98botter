@@ -11,6 +11,14 @@ const rpc = require("./rpc");
 
 const CALL_TIMEOUT_MS = 35000;
 
+function isUsefulIdentityValue(v) {
+  if (!v) return false;
+  const s = String(v).trim();
+  if (!s) return false;
+  const lower = s.toLowerCase();
+  return lower !== "unknown" && lower !== "n/a" && lower !== "none";
+}
+
 class Win98Connection {
   /**
    * @param {import('net').Socket} socket
@@ -123,12 +131,24 @@ class Win98Connection {
       clientInfo: { name: "win98botter-relay", version: "0.1.0" },
     });
     this.agentInfo = result;
-    // Agent sends machineGuid and hostname in the initialize response
-    this.agentId =
-      result && result.machineGuid && result.machineGuid !== "unknown"
-        ? result.machineGuid
-        : this.remoteAddress;
-    this.hostname = (result && result.hostname) || null;
+
+    // Agent sends machineGuid and hostname in the initialize response.
+    // Prefer machineGuid, then hostname, then socket address as a final fallback.
+    const machineGuid = result && result.machineGuid;
+    const hostname = result && result.hostname;
+
+    this.hostname = isUsefulIdentityValue(hostname)
+      ? String(hostname).trim()
+      : null;
+
+    if (isUsefulIdentityValue(machineGuid)) {
+      this.agentId = String(machineGuid).trim();
+    } else if (this.hostname) {
+      this.agentId = `host:${this.hostname.toLowerCase()}`;
+    } else {
+      this.agentId = this.remoteAddress;
+    }
+
     return result;
   }
 

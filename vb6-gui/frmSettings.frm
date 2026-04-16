@@ -111,7 +111,7 @@ Private Const INI_PATH As String = "C:\WIN98BOTTER\agent_gui.ini"
 Private Sub Form_Load()
     Dim host As String, port As String, mcp As String
     host = GetIni("gui", "relay_host", "127.0.0.1")
-    port = GetIni("gui", "relay_port", "8080")
+   port = GetIni("gui", "relay_port", "3000")
     mcp  = GetIni("gui", "mcp_exe",   "C:\WIN98BOTTER\win98-mcp-server.exe")
     txtRelayHost.Text = host
     txtRelayPort.Text = port

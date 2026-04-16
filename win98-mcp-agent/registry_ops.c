@@ -45,7 +45,9 @@ static const char *reg_type_name(DWORD type)
         case REG_DWORD:             return "REG_DWORD";
         case REG_DWORD_BIG_ENDIAN:  return "REG_DWORD_BE";
         case REG_MULTI_SZ:          return "REG_MULTI_SZ";
+#ifdef REG_QWORD
         case REG_QWORD:             return "REG_QWORD";
+#endif
         default:                    return "UNKNOWN";
     }
 }

@@ -91,7 +91,7 @@ export default function Dashboard() {
               <FileActivity agent={current} />
             </div>
             <div style={styles.rightPaneBot}>
-              <LogViewer />
+              <LogViewer agentId={current.agentId} />
             </div>
           </div>
         </div>

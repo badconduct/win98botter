@@ -28,6 +28,7 @@ typedef struct {
 } Permissions;
 
 void             permissions_load(const char *ini_path);
+void             permissions_set_from_json(cJSON *obj);  /* relay runtime override */
 const Permissions *permissions_get(void);
 int              permission_allowed(const char *tool_name);
 cJSON           *permissions_to_json(void);

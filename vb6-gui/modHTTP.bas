@@ -211,13 +211,38 @@ Public Function GetHistory() As String
 End Function
 
 ' Send a control command (pause / resume / disconnect)
-Public Function PostControl(ByVal cmd As String) As String
+Public Function PostControl(ByVal cmd As String, Optional ByVal agent_id As String = "") As String
     Dim body As String
-    body = "{""action"":""" & cmd & """}"
+    Dim safe_agent_id As String
+    safe_agent_id = EscapeJson(agent_id)
+    If agent_id <> "" Then
+        body = "{""action"":""" & cmd & """,""agent_id"":""" & safe_agent_id & """}"
+    Else
+        body = "{""action"":""" & cmd & """}"
+    End If
     PostControl = HttpPost("/control", body, 5000)
+End Function
+
+Public Function PostControlPermissions(ByVal agent_id As String, ByVal permissionsJson As String) As String
+    Dim body As String
+    Dim safe_agent_id As String
+    safe_agent_id = EscapeJson(agent_id)
+    If agent_id <> "" Then
+        body = "{""action"":""permissions""",""agent_id"":""" & safe_agent_id & """,""permissions"":" & permissionsJson & "}"
+    Else
+        body = "{""action"":""permissions""",""permissions"":" & permissionsJson & "}"
+    End If
+    PostControlPermissions = HttpPost("/control", body, 5000)
 End Function
 
 ' Get relay health; returns raw JSON
 Public Function GetHealth() As String
     GetHealth = HttpGet("/health")
+End Function
+
+Private Function EscapeJson(ByVal value As String) As String
+    Dim safe_value As String
+    safe_value = Replace(value, "\", "\\")
+    safe_value = Replace(safe_value, """", "\"")
+    EscapeJson = safe_value
 End Function

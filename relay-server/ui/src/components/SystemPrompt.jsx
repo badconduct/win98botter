@@ -14,6 +14,8 @@ export default function SystemPrompt({ agent }) {
   const [customPrompt, setCustomPrompt] = useState("");
   const [editingCustom, setEditingCustom] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [flags, setFlags] = useState({});
+  const [permissions, setPermissions] = useState({});
 
   const agentId = agent?.agentId;
 
@@ -23,10 +25,63 @@ export default function SystemPrompt({ agent }) {
     setLoading(true);
     api
       .getSystemPrompt(agentId)
-      .then((data) => setServerPrompt(data?.prompt ?? ""))
+      .then((data) => {
+        setServerPrompt(data?.prompt ?? "");
+        setFlags(data?.flags ?? {});
+        setPermissions(data?.permissions ?? {});
+      })
       .catch(() => setServerPrompt("(failed to load)"))
       .finally(() => setLoading(false));
   }, [agentId]);
+
+  async function toggleFlag(name) {
+    if (!agentId) return;
+    const next = { ...flags, [name]: !flags[name] };
+    setFlags(next);
+    try {
+      const res = await api.setSystemPromptFlags(agentId, next);
+      setFlags(res?.flags ?? next);
+      const data = await api.getSystemPrompt(agentId);
+      setServerPrompt(data?.prompt ?? "");
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1200);
+    } catch {
+      // revert on error
+      setFlags(flags);
+    }
+  }
+
+  async function togglePermission(name) {
+    if (!agentId || agent?.online === false) return;
+    const next = { ...permissions, [name]: !permissions[name] };
+    setPermissions(next);
+    try {
+      const res = await api.setAgentPermissions(agentId, next);
+      setPermissions(res?.permissions ?? next);
+      const data = await api.getSystemPrompt(agentId);
+      setServerPrompt(data?.prompt ?? "");
+      setFlags(data?.flags ?? {});
+      setPermissions(data?.permissions ?? res?.permissions ?? next);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1200);
+    } catch {
+      // revert on error
+      setPermissions(permissions);
+    }
+  }
+
+  const PERMISSION_ORDER = [
+    ["file_read", "file_read"],
+    ["file_write", "file_write"],
+    ["registry_read", "registry_read"],
+    ["registry_write", "registry_write"],
+    ["execute", "execute"],
+    ["process_kill", "process_kill"],
+    ["hardware_io", "hardware_io"],
+    ["serial", "serial"],
+    ["scheduler", "scheduler"],
+    ["system", "system"],
+  ];
 
   // Load saved custom prompt from localStorage
   useEffect(() => {
@@ -53,6 +108,31 @@ export default function SystemPrompt({ agent }) {
       <div style={styles.sectionHeader}>
         <span style={styles.title}>System Prompt</span>
         <span style={styles.badge}>auto-generated</span>
+        <div style={styles.flagsRow}>
+          {[
+            ["execution_patterns", "Exec"],
+            ["crash_protocol", "Crash"],
+            ["investigation_first", "Investigate"],
+            ["platform_notes", "Platform"],
+            ["capability_tiers", "Tiers"],
+            ["sensory_verification", "Sensory"],
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              style={{
+                ...styles.flagBtn,
+                ...(flags[key] !== false
+                  ? styles.flagBtnOn
+                  : styles.flagBtnOff),
+              }}
+              onClick={() => toggleFlag(key)}
+              title={`Toggle ${label} section`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         {isLong && (
           <button style={styles.btn} onClick={() => setShowFull((f) => !f)}>
             {showFull ? "Collapse" : "Expand"}
@@ -69,6 +149,39 @@ export default function SystemPrompt({ agent }) {
         ) : (
           <p style={styles.empty}>No agent connected.</p>
         )}
+      </div>
+
+      <div style={styles.sectionHeader}>
+        <span style={styles.title}>Active Permissions</span>
+        <span style={styles.badge}>
+          {agent?.online === false ? "offline (read-only)" : "click to toggle"}
+        </span>
+      </div>
+      <div style={styles.permissionsWrap}>
+        {PERMISSION_ORDER.map(([key, label]) => {
+          const enabled = permissions[key] !== false;
+          return (
+            <button
+              key={key}
+              type="button"
+              style={{
+                ...styles.permBtn,
+                ...(enabled ? styles.permBtnOn : styles.permBtnOff),
+                ...(agent?.online === false ? styles.permBtnDisabled : {}),
+              }}
+              onClick={() => togglePermission(key)}
+              disabled={agent?.online === false}
+              title={
+                agent?.online === false
+                  ? "Agent offline: reconnect to change permissions"
+                  : `Toggle ${label}`
+              }
+            >
+              <span style={styles.permSymbol}>{enabled ? "✓" : "✗"}</span>
+              <span>{label}</span>
+            </button>
+          );
+        })}
       </div>
 
       {/* ── User custom prefix (editable) ── */}
@@ -157,6 +270,73 @@ const styles = {
     borderRadius: 3,
     padding: "1px 5px",
     fontFamily: "Consolas, monospace",
+  },
+  flagsRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    marginLeft: 8,
+    flexWrap: "wrap",
+  },
+  flagBtn: {
+    padding: "1px 6px",
+    borderRadius: 999,
+    border: "1px solid #333",
+    background: "#11111a",
+    color: "#8080a0",
+    cursor: "pointer",
+    fontSize: 10,
+  },
+  flagBtnOn: {
+    borderColor: "#4a3a7a",
+    color: "#b8a8ff",
+    background: "#181328",
+  },
+  flagBtnOff: {
+    color: "#555577",
+    background: "#0d0d15",
+    borderColor: "#24243a",
+  },
+  permissionsWrap: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 6,
+    padding: "8px 10px",
+    borderBottom: "1px solid #1e1e30",
+    background: "#090913",
+    flexShrink: 0,
+  },
+  permBtn: {
+    padding: "3px 8px",
+    borderRadius: 999,
+    border: "1px solid #2a2a40",
+    background: "#10101a",
+    color: "#7f7f9f",
+    cursor: "pointer",
+    fontSize: 10,
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+    fontFamily: "Consolas, monospace",
+  },
+  permBtnOn: {
+    borderColor: "#245834",
+    color: "#8de3a3",
+    background: "#0f1f14",
+  },
+  permBtnOff: {
+    borderColor: "#5a2525",
+    color: "#fca5a5",
+    background: "#241111",
+  },
+  permBtnDisabled: {
+    opacity: 0.55,
+    cursor: "not-allowed",
+  },
+  permSymbol: {
+    fontWeight: 700,
+    width: 8,
+    display: "inline-block",
   },
   headerActions: {
     display: "flex",

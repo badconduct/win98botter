@@ -3,7 +3,7 @@ Option Explicit
 
 ' ── Permissions structure ──────────────────────────────────────────────────────
 '
-' Mirrors permissions.ini  [permissions] section that the C agent reads.
+' Mirrors permissions.ini [tools] section that the C agent reads.
 ' Stored in C:\WIN98BOTTER\permissions.ini
 
 Public Type PermissionsType
@@ -28,7 +28,7 @@ End Type
 Public g_Perms As PermissionsType
 
 Private Const PERMS_INI  As String = "C:\WIN98BOTTER\permissions.ini"
-Private Const PERMS_SEC  As String = "permissions"
+Private Const PERMS_SEC  As String = "tools"
 
 ' Win32 INI API
 Private Declare Function GetPrivateProfileStringA Lib "kernel32" ( _
@@ -82,6 +82,29 @@ Public Sub SavePermissions()
     WriteBool "display",          g_Perms.display
 End Sub
 
+Public Function PermissionsToJson() As String
+    Dim s As String
+    s = "{"
+    s = s & """read_file"":" & BoolJson(g_Perms.read_file)
+    s = s & ",""write_file"":" & BoolJson(g_Perms.write_file)
+    s = s & ",""delete_file"":" & BoolJson(g_Perms.delete_file)
+    s = s & ",""list_processes"":" & BoolJson(g_Perms.list_processes)
+    s = s & ",""kill_process"":" & BoolJson(g_Perms.kill_process)
+    s = s & ",""run_command"":" & BoolJson(g_Perms.run_command)
+    s = s & ",""read_registry"":" & BoolJson(g_Perms.read_registry)
+    s = s & ",""write_registry"":" & BoolJson(g_Perms.write_registry)
+    s = s & ",""read_port"":" & BoolJson(g_Perms.read_port)
+    s = s & ",""write_port"":" & BoolJson(g_Perms.write_port)
+    s = s & ",""load_vxd"":" & BoolJson(g_Perms.load_vxd)
+    s = s & ",""modify_sysconfig"":" & BoolJson(g_Perms.modify_sysconfig)
+    s = s & ",""serial"":" & BoolJson(g_Perms.serial)
+    s = s & ",""scheduler"":" & BoolJson(g_Perms.scheduler)
+    s = s & ",""audio"":" & BoolJson(g_Perms.audio)
+    s = s & ",""display"":" & BoolJson(g_Perms.display)
+    s = s & "}"
+    PermissionsToJson = s
+End Function
+
 ' ── Private helpers ────────────────────────────────────────────────────────────
 
 Private Function ReadBool(ByVal key As String, ByVal def As Boolean) As Boolean
@@ -96,3 +119,11 @@ End Function
 Private Sub WriteBool(ByVal key As String, ByVal val As Boolean)
     WritePrivateProfileStringA PERMS_SEC, key, IIf(val, "1", "0"), PERMS_INI
 End Sub
+
+Private Function BoolJson(ByVal val As Boolean) As String
+    If val Then
+        BoolJson = "true"
+    Else
+        BoolJson = "false"
+    End If
+End Function

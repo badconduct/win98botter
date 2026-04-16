@@ -1,0 +1,81 @@
+<html>
+<body>
+<pre>
+<h1>Build Log</h1>
+<h3>
+--------------------Configuration: mcp_server - Win32 Debug--------------------
+</h3>
+<h3>Command Lines</h3>
+Creating temporary file "C:\WINDOWS\TEMP\RSPF2F3.TMP" with contents
+[
+/nologo /MLd /W3 /Gm /GX /ZI /Od /D "WIN32" /D "_DEBUG" /D "_CONSOLE" /D "_MBCS" /Fp"Debug/mcp_server.pch" /YX /Fo"Debug/" /Fd"Debug/" /FD /GZ /c 
+"C:\Share\Applications\win98-mcp2\win98-mcp-server\mcp_server.c"
+"C:\Share\Applications\win98-mcp2\win98-mcp-server\cli_mode.c"
+"C:\Share\Applications\win98-mcp2\win98-mcp-server\exec_ops.c"
+"C:\Share\Applications\win98-mcp2\win98-mcp-server\file_ops.c"
+"C:\Share\Applications\win98-mcp2\win98-mcp-server\ini_ops.c"
+"C:\Share\Applications\win98-mcp2\win98-mcp-server\ipc_ops.c"
+"C:\Share\Applications\win98-mcp2\win98-mcp-server\permissions.c"
+"C:\Share\Applications\win98-mcp2\win98-mcp-server\process_ops.c"
+"C:\Share\Applications\win98-mcp2\win98-mcp-server\registry_ops.c"
+"C:\Share\Applications\win98-mcp2\win98-mcp-server\system_ops.c"
+"C:\Share\Applications\win98-mcp2\win98-mcp-server\cJSON.c"
+]
+Creating command line "cl.exe @C:\WINDOWS\TEMP\RSPF2F3.TMP" 
+Creating temporary file "C:\WINDOWS\TEMP\RSPF2F4.TMP" with contents
+[
+kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /nologo /subsystem:console /incremental:yes /pdb:"Debug/mcp_server.pdb" /debug /machine:I386 /out:"Debug/mcp_server.exe" /pdbtype:sept 
+".\Debug\mcp_server.obj"
+".\Debug\cli_mode.obj"
+".\Debug\exec_ops.obj"
+".\Debug\file_ops.obj"
+".\Debug\ini_ops.obj"
+".\Debug\ipc_ops.obj"
+".\Debug\permissions.obj"
+".\Debug\process_ops.obj"
+".\Debug\registry_ops.obj"
+".\Debug\system_ops.obj"
+".\Debug\cJSON.obj"
+]
+Creating command line "link.exe @C:\WINDOWS\TEMP\RSPF2F4.TMP"
+<h3>Output Window</h3>
+Compiling...
+mcp_server.c
+cli_mode.c
+exec_ops.c
+file_ops.c
+ini_ops.c
+ipc_ops.c
+permissions.c
+process_ops.c
+registry_ops.c
+system_ops.c
+cJSON.c
+Linking...
+   Creating library Debug/mcp_server.lib and object Debug/mcp_server.exp
+mcp_server.obj : error LNK2001: unresolved external symbol _WSACleanup@0
+mcp_server.obj : error LNK2001: unresolved external symbol _closesocket@4
+mcp_server.obj : error LNK2001: unresolved external symbol _WSAGetLastError@0
+mcp_server.obj : error LNK2001: unresolved external symbol _WSAStartup@8
+mcp_server.obj : error LNK2001: unresolved external symbol _select@20
+mcp_server.obj : error LNK2001: unresolved external symbol _recv@16
+mcp_server.obj : error LNK2001: unresolved external symbol _send@16
+mcp_server.obj : error LNK2001: unresolved external symbol _connect@12
+mcp_server.obj : error LNK2001: unresolved external symbol _socket@12
+mcp_server.obj : error LNK2001: unresolved external symbol _gethostbyname@4
+mcp_server.obj : error LNK2001: unresolved external symbol _inet_addr@4
+mcp_server.obj : error LNK2001: unresolved external symbol _htons@4
+system_ops.obj : error LNK2001: unresolved external symbol __imp__waveInGetDevCapsA@12
+system_ops.obj : error LNK2001: unresolved external symbol __imp__waveInGetNumDevs@0
+system_ops.obj : error LNK2001: unresolved external symbol __imp__midiInGetDevCapsA@12
+system_ops.obj : error LNK2001: unresolved external symbol __imp__midiInGetNumDevs@0
+Debug/mcp_server.exe : fatal error LNK1120: 16 unresolved externals
+Error executing link.exe.
+
+
+
+<h3>Results</h3>
+mcp_server.exe - 17 error(s), 0 warning(s)
+</pre>
+</body>
+</html>

@@ -290,12 +290,12 @@ End Sub
 
 Private Sub btnPause_Click()
     If m_paused Then
-        PostControl "resume"
+        PostControl "resume", m_agentId
         m_paused = False
         btnPause.Caption = "Pau&se"
         lblStatus.Caption = "Status: Resumed"
     Else
-        PostControl "pause"
+        PostControl "pause", m_agentId
         m_paused = True
         btnPause.Caption = "&Resume"
         lblStatus.Caption = "Status: Paused"
@@ -317,9 +317,23 @@ End Sub
 ' ── Save permissions ──────────────────────────────────────────────────────────
 
 Private Sub btnSavePerms_Click()
+    Dim reply As String
+
     ReadPermCheckboxes
     SavePermissions
-    lblStatus.Caption = "Status: Permissions saved"
+
+    If m_agentId = "" Then Call RefreshAgentId
+    reply = PostControlPermissions(m_agentId, PermissionsToJson())
+
+    If Left(reply, 7) = "ERROR: " Then
+        lblStatus.Caption = "Status: Permission sync failed"
+        AppendChat "Error", reply
+    ElseIf InStr(reply, """success"":true") > 0 Or _
+           InStr(reply, """success"": true") > 0 Then
+        lblStatus.Caption = "Status: Permissions saved and synced"
+    Else
+        lblStatus.Caption = "Status: Permissions saved locally"
+    End If
 End Sub
 
 ' ── Poll timer ────────────────────────────────────────────────────────────────

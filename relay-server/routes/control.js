@@ -61,6 +61,17 @@ async function controlRoutes(fastify, opts) {
           if (!permissions)
             return reply.status(503).send({ error: "No agent connected" });
           permissions.update(newPerms);
+          /* Push the updated permission state to the Win98 agent so it
+           * takes effect immediately without requiring a restart or manual
+           * edit of permissions.ini on the Win98 machine.
+           * Use getAsToolLevel() to send in agent-compatible format. */
+          if (win98 && win98.connected) {
+            try {
+              await win98.call("set_permissions", permissions.getAsToolLevel());
+            } catch (pushErr) {
+              fastify.log.warn({ err: pushErr }, "set_permissions push failed");
+            }
+          }
           return reply.send({
             success: true,
             permissions: permissions.getAll(),

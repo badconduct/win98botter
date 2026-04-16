@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { api } from "../api/index.js";
 
 const LOG_MAX = 120;
+const DEFAULT_MODEL = "gpt-oss:20b";
 
 const PROVIDERS = [
   {
@@ -17,7 +18,7 @@ const PROVIDERS = [
   {
     label: "Ollama (local)",
     urlHint: "http://host.docker.internal:11434/v1",
-    modelHint: "llama3.1:8b",
+    modelHint: DEFAULT_MODEL,
     note: "Docker URL: host.docker.internal  |  bare-metal: localhost  \u2014  Ollama must listen on 0.0.0.0, not 127.0.0.1",
   },
   {
@@ -40,7 +41,7 @@ export default function Setup({ onDone, mode = "setup" }) {
   const [providerIdx, setProviderIdx] = useState(0);
   const [apiUrl, setApiUrl] = useState(PROVIDERS[0].urlHint);
   const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState(PROVIDERS[0].modelHint);
+  const [model, setModel] = useState(DEFAULT_MODEL);
   const [httpPort, setHttpPort] = useState("3000");
   const [tcpPort, setTcpPort] = useState("9000");
 
@@ -85,7 +86,7 @@ export default function Setup({ onDone, mode = "setup" }) {
         if (cancelled) return;
         setApiUrl(config.BOT_API_URL || "");
         setApiKey(config.BOT_API_KEY || "");
-        setModel(config.BOT_MODEL || "");
+        setModel(config.BOT_MODEL || DEFAULT_MODEL);
         setHttpPort(config.HTTP_PORT || "3000");
         setTcpPort(config.WIN98_LISTEN_PORT || "9000");
 

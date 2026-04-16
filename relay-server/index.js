@@ -32,7 +32,7 @@ if (fs.existsSync(envPath)) {
 const config = {
   botApiUrl: process.env.BOT_API_URL || "",
   botApiKey: process.env.BOT_API_KEY || "",
-  botModel: process.env.BOT_MODEL || "claude-opus-4-5",
+  botModel: process.env.BOT_MODEL || "gpt-oss:20b",
   win98ListenPort: parseInt(process.env.WIN98_LISTEN_PORT || "9000", 10),
   win98ListenHost: process.env.WIN98_LISTEN_HOST || "0.0.0.0",
   httpPort: parseInt(process.env.HTTP_PORT || "3000", 10),
@@ -127,6 +127,7 @@ win98Server.onConnection(async (conn) => {
 
   // Run initialize handshake to get the agent's MachineGuid + hostname
   let agentId;
+  let registryId;
   try {
     const info = await conn.initialize();
     agentId = conn.agentId;
@@ -143,6 +144,15 @@ win98Server.onConnection(async (conn) => {
     fastify.log.warn(
       { err, fallbackId: agentId },
       "Win98 initialize failed - using IP as ID",
+    );
+  }
+
+  registryId = agentId;
+  if (registry.get(registryId)) {
+    registryId = `${agentId}#${Date.now().toString(36)}`;
+    fastify.log.warn(
+      { canonicalAgentId: agentId, registryId },
+      "Duplicate agent identity detected; registered as separate live connection",
     );
   }
 
@@ -170,22 +180,31 @@ win98Server.onConnection(async (conn) => {
     fastify.log.debug({ agentId: id, params }, "Win98 heartbeat");
   });
 
-  conn.onDisconnect((id) => {
-    fastify.log.info({ agentId: id }, "Win98 agent disconnected");
-    registry.remove(id);
+  conn.onDisconnect(() => {
+    fastify.log.info(
+      { agentId: registryId, canonicalAgentId: agentId },
+      "Win98 agent disconnected",
+    );
+    registry.remove(registryId);
     watchdog.stop();
   });
 
-  registry.register(agentId, {
+  registry.register(registryId, {
     connection: conn,
     watchdog,
     agentLoop: null,
     permissions,
+    staging,
+    canonicalAgentId: agentId,
   });
   watchdog.start();
 
   fastify.log.info(
-    { agentId, agentCount: registry.list().length },
+    {
+      agentId: registryId,
+      canonicalAgentId: agentId,
+      agentCount: registry.list().length,
+    },
     "Agent registered",
   );
 });
@@ -269,6 +288,7 @@ fastify.register(require("./routes/logs"), routeOpts);
 fastify.register(require("./routes/agents"), routeOpts);
 fastify.register(require("./routes/system-prompt"), routeOpts);
 fastify.register(require("./routes/map-cache"), routeOpts);
+fastify.register(require("./routes/file-activity"), routeOpts);
 
 // -- Start ---------------------------------------------------------------------
 async function start() {
