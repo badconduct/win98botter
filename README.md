@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./win98botter.png" alt="Win98Botter" width="720">
+</p>
+
 # Win98Botter
 
 Win98Botter is a multi-component control stack for Windows 98-era systems:
@@ -12,7 +16,7 @@ This README reflects the current implemented state, not a future-only design dra
 
 ## Critical Build Requirement
 
-The `win98-mcp-agent` binary is currently version **0.9** and should be compiled with **Visual Studio 6 (VC6) on Windows 98 SE** for real target deployment.
+The `win98-mcp-agent` binary is currently version **0.10** and should be compiled with **Visual Studio 6 (VC6) on Windows 98 SE** for real target deployment.
 
 Do not treat modern toolchain builds (newer MSVC/MinGW) as production-equivalent for real Win98SE deployment. They may build, but can introduce runtime incompatibilities on target systems.
 
@@ -65,6 +69,7 @@ Win98Botter is designed as a **modern control and assistance layer for real Wind
 - It includes agent tabs, setup and settings pages, log viewing, chat history, system prompt inspection, permission toggles, and file activity views.
 - The Settings flow now also exposes the optional PostgreSQL Phase 1 cache directly in the application, so users can enable or disable it themselves and edit the connection details without manually editing files.
 - Health and status reporting are implemented so you can quickly see whether the relay and connected agents are alive and responding.
+- The web admin chat is now separated from the local VB6 user chat so operator conversations and on-machine user conversations do not share the same session thread.
 
 ### 📸 Screenshot and visual troubleshooting
 
@@ -113,15 +118,22 @@ In practice, SQLite is the project’s day-to-day audit trail, while PostgreSQL 
 - It writes persistent logs with INI-configurable verbosity.
 - It acts as the execution layer for the relay, returning structured results back to the modern control plane.
 
+### 🖱️ VB6 local supervisor features
+
+- The VB6 client now includes local **Start**, **Stop**, **Install**, and **Uninstall** controls for the agent.
+- It can auto-resolve the agent executable path from settings, the local app folder, or the default deployment folder.
+- It includes a **Hide** action for background operation and a **View Log** action for quickly checking the local agent log.
+- VB6-originated chat is treated as the **user** conversation channel, separate from the web administrator chat.
+
 ---
 
 ## ⚡ Quick Start
 
 1. Start the relay server using either Docker Compose or local Node.js.
 2. Open the Setup or Settings screen and configure the model endpoint, relay ports, and optional PostgreSQL cache.
-3. Build `win98-mcp-agent` version **0.9** using **Visual Studio 6 on Windows 98 SE**.
+3. Build the Win98 agent version **0.10** using **Visual Studio 6 on Windows 98 SE**.
 4. Start the agent in foreground, service mode, or local CLI mode depending on your workflow.
-5. If you want visual capture, enable `screenshot=1` in the agent permissions file and restart the agent.
+5. If you want visual capture, enable the screenshot permission in the agent permissions file and restart the agent.
 6. If you enable the PostgreSQL Phase 1 cache, confirm the DB connection values in Settings and restart the relay if needed.
 7. Connect through the web dashboard or the VB6 client.
 
@@ -153,7 +165,7 @@ npm run dev
 | Flag                      | Effect                                                                   |
 | ------------------------- | ------------------------------------------------------------------------ |
 | _(none)_                  | Normal foreground mode                                                   |
-| `-version`                | Print `Win98MCPAgent 0.9` and exit                                       |
+| `-version`                | Print the current build version and exit                                 |
 | `-service`                | Run as a hidden background Win9x service                                 |
 | `-install`                | Register the agent for automatic startup and exit                        |
 | `-stop`                   | Stop a running local agent instance and exit                             |
@@ -207,13 +219,14 @@ win98botter/
 ## ✅ Recent Improvements
 
 1. Updated the assistant identity prompt so the relay persona is clearly distinct from the physical Win98 machine.
-2. Added the `capture_screenshot` tool to the relay and Win98 agent.
+2. Added the screenshot capture flow to the relay and Win98 agent and verified the database caching path.
 3. Added a screenshot permission toggle to the web UI.
-4. Added screenshot-awareness to the system prompt so the assistant can explain when visual capture is unavailable.
-5. Fixed relay staging logic to correctly read Win98 file payloads and binary content.
-6. Added SQLite caching for captured screenshots, file locations, and directory activity.
-7. Exposed the optional PostgreSQL Phase 1 cache in the Settings UI.
-8. Bumped the Win98 agent version to **0.9**.
+4. Fixed relay staging logic to correctly read Win98 file payloads and binary content.
+5. Added SQLite caching for captured screenshots, file locations, and directory activity.
+6. Exposed the optional PostgreSQL Phase 1 cache in the Settings UI.
+7. Added VB6 local supervisor controls for Start, Stop, Install, Uninstall, Hide, and View Log.
+8. Separated local user chat from web administrator chat at the session level.
+9. Bumped the Win98 agent version to **0.10**.
 
 ---
 

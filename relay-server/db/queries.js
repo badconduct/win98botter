@@ -38,12 +38,20 @@ function deleteAgent(agentId) {
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
-function createSession(id, agentId, win98Host, llmModel) {
+function createSession(id, agentId, win98Host, llmModel, source) {
+  const sessionSource = String(source || "administrator").toLowerCase();
   getDb()
     .prepare(
-      "INSERT OR IGNORE INTO sessions (id, agent_id, started_at, win98_host, llm_model) VALUES (?, ?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO sessions (id, agent_id, source, started_at, win98_host, llm_model) VALUES (?, ?, ?, ?, ?, ?)",
     )
-    .run(id, agentId || null, now(), win98Host || null, llmModel || null);
+    .run(
+      id,
+      agentId || null,
+      sessionSource,
+      now(),
+      win98Host || null,
+      llmModel || null,
+    );
 }
 
 function updateSessionTokens(sessionId, additionalTokens) {
@@ -56,7 +64,15 @@ function getSession(sessionId) {
   return getDb().prepare("SELECT * FROM sessions WHERE id = ?").get(sessionId);
 }
 
-function getLatestSessionByAgentId(agentId) {
+function getLatestSessionByAgentId(agentId, source) {
+  if (source) {
+    return getDb()
+      .prepare(
+        "SELECT * FROM sessions WHERE agent_id = ? AND COALESCE(source, 'administrator') = ? ORDER BY started_at DESC LIMIT 1",
+      )
+      .get(agentId, String(source).toLowerCase());
+  }
+
   return getDb()
     .prepare(
       "SELECT * FROM sessions WHERE agent_id = ? ORDER BY started_at DESC LIMIT 1",

@@ -55,12 +55,61 @@ Begin VB.Form frmMain
       Width    =   855
    End
 
+   Begin VB.CommandButton btnStart
+      Caption  =   "&Start"
+      Height   =   315
+      Left     =   120
+      TabIndex =   19
+      Top      =   600
+      Width    =   1455
+   End
+   Begin VB.CommandButton btnStop
+      Caption  =   "S&top"
+      Height   =   315
+      Left     =   1680
+      TabIndex =   20
+      Top      =   600
+      Width    =   1455
+   End
+   Begin VB.CommandButton btnInstall
+      Caption  =   "&Install"
+      Height   =   315
+      Left     =   3240
+      TabIndex =   21
+      Top      =   600
+      Width    =   1455
+   End
+   Begin VB.CommandButton btnUninstall
+      Caption  =   "&Uninstall"
+      Height   =   315
+      Left     =   4800
+      TabIndex =   22
+      Top      =   600
+      Width    =   1455
+   End
+   Begin VB.CommandButton btnViewLog
+      Caption  =   "View &Log"
+      Height   =   315
+      Left     =   6360
+      TabIndex =   23
+      Top      =   600
+      Width    =   1455
+   End
+   Begin VB.CommandButton btnHide
+      Caption  =   "&Hide"
+      Height   =   315
+      Left     =   7920
+      TabIndex =   24
+      Top      =   600
+      Width    =   1455
+   End
+
    ' ── Chat history (RichTextBox — read only) ────────────────────────────
    Begin MSComctlLib.RichTextBox rtbHistory
-      Height   =   4815
+      Height   =   4335
       Left     =   120
       TabIndex =   5
-      Top      =   600
+      Top      =   960
       Width    =   9360
       _ExtentX =   16510
       _ExtentY =   8493
@@ -199,37 +248,81 @@ Attribute VB_Exposed = False
 
 Option Explicit
 
+Private Const APP_SOURCE As String = "user"
+Private Const WM_MOUSEMOVE As Long = &H200
+Private Const WM_LBUTTONUP As Long = &H202
+Private Const WM_LBUTTONDBLCLK As Long = &H203
+Private Const WM_RBUTTONUP As Long = &H205
+Private Const NIM_ADD As Long = &H0
+Private Const NIM_DELETE As Long = &H2
+Private Const NIF_MESSAGE As Long = &H1
+Private Const NIF_ICON As Long = &H2
+Private Const NIF_TIP As Long = &H4
+
+Private Type NOTIFYICONDATA
+    cbSize As Long
+    hwnd As Long
+    uId As Long
+    uFlags As Long
+    uCallbackMessage As Long
+    hIcon As Long
+    szTip As String * 64
+End Type
+
+Private Declare Function Shell_NotifyIconA Lib "shell32.dll" ( _
+    ByVal dwMessage As Long, lpData As NOTIFYICONDATA) As Long
+
 Private m_paused      As Boolean
 Private m_sessionId   As String
 Private m_lastMsgId   As Long
 Private m_agentId     As String
+Private m_inTray      As Boolean
 
 ' ── Form_Load ────────────────────────────────────────────────────────────────
 
 Private Sub Form_Load()
-    m_paused    = False
+    m_paused = False
     m_sessionId = ""
     m_lastMsgId = 0
+    m_inTray = False
+
+    MCP_EXE = GetMCPExePath()
 
     LoadPermissions
     UpdatePermCheckboxes
 
     lblStatus.Caption = "Status: Idle"
-    rtbHistory.Text   = ""
+    rtbHistory.Text = ""
 
     ' Try to start MCP server if not running
     If Not IsMCPServerRunning() Then
         StartMCPServer
     End If
 
+    UpdateControlButtons
     UpdateStatus
     If m_agentId = "" Then Call RefreshAgentId
+    Call SyncHistory
 End Sub
 
 ' ── Form_Unload ───────────────────────────────────────────────────────────────
 
 Private Sub Form_Unload(Cancel As Integer)
     tmrPoll.Enabled = False
+    RemoveTrayIcon
+End Sub
+
+Private Sub Form_Resize()
+    If Me.WindowState = vbMinimized Then HideToTray
+End Sub
+
+Private Sub Form_MouseMove(Button As Integer, Shift As Integer, X As Single, Y As Single)
+    Dim msg As Long
+    msg = CLng(X / Screen.TwipsPerPixelX)
+
+    If msg = WM_LBUTTONUP Or msg = WM_LBUTTONDBLCLK Or msg = WM_RBUTTONUP Then
+        RestoreFromTray
+    End If
 End Sub
 
 ' ── Send button ───────────────────────────────────────────────────────────────
@@ -239,7 +332,6 @@ Private Sub btnSend_Click()
     msg = Trim(txtMessage.Text)
     If Len(msg) = 0 Then Exit Sub
 
-    AppendChat "You", msg
     txtMessage.Text = ""
     lblStatus.Caption = "Status: Sending..."
 
@@ -255,25 +347,59 @@ Private Sub btnSend_Click()
     Else
         finalMsg = msg
     End If
-    reply = PostChat(finalMsg, m_sessionId, m_agentId)
+    reply = PostChat(finalMsg, m_sessionId, m_agentId, APP_SOURCE)
 
-    If Left(reply, 7) = "ERROR: " Then
+    If Left$(reply, 7) = "ERROR: " Then
         AppendChat "Error", reply
         lblStatus.Caption = "Status: Error"
     Else
-        ' Extract session_id from first response if not set
         If m_sessionId = "" Then
             Dim sid As String
             sid = ExtractJson(reply, "session_id")
             If sid <> "" Then m_sessionId = sid
         End If
 
-        Dim txt As String
-        txt = ExtractJson(reply, "response")
-        If txt = "" Then txt = reply
-        AppendChat "Assistant", txt
+        Call SyncHistory
         lblStatus.Caption = "Status: OK"
     End If
+End Sub
+
+Private Sub btnStart_Click()
+    StartMCPServer
+    UpdateControlButtons
+    UpdateStatus
+End Sub
+
+Private Sub btnStop_Click()
+    StopMCPServer
+    UpdateControlButtons
+    UpdateStatus
+End Sub
+
+Private Sub btnInstall_Click()
+    InstallMCPServer
+    UpdateControlButtons
+    lblStatus.Caption = "Status: Installed for auto-start"
+End Sub
+
+Private Sub btnUninstall_Click()
+    UninstallMCPServer
+    UpdateControlButtons
+    lblStatus.Caption = "Status: Auto-start removed"
+End Sub
+
+Private Sub btnViewLog_Click()
+    Dim logText As String
+    logText = ReadTailFromFile(GetMCPLogPath(), 4096)
+    If Len(logText) = 0 Then
+        AppendChat "Local Log", "No agent.log content found yet at " & GetMCPLogPath()
+    Else
+        AppendChat "Local Log", logText
+    End If
+End Sub
+
+Private Sub btnHide_Click()
+    HideToTray
 End Sub
 
 ' ── Clear button ─────────────────────────────────────────────────────────────
@@ -340,6 +466,7 @@ End Sub
 
 Private Sub tmrPoll_Timer()
     UpdateStatus
+    SyncHistory
 End Sub
 
 ' ── Helpers ────────────────────────────────────────────────────────────────────
@@ -360,12 +487,14 @@ End Sub
 Private Sub UpdateStatus()
     Dim health As String
     health = GetHealth()
+
     ' Cache agent_id from health response if we don't have it yet
     If m_agentId = "" Then
         Dim aid As String
         aid = ExtractJson(health, "agent_id")
         If aid <> "" Then m_agentId = aid
     End If
+
     If InStr(health, """relay"":true") > 0 Or InStr(health, """relay"": true") > 0 Then
         If Not m_paused Then
             If InStr(health, """win98_connected"":true") > 0 Or _
@@ -376,10 +505,10 @@ Private Sub UpdateStatus()
             End If
         End If
     Else
-        If Not m_paused Then
-            lblStatus.Caption = "Status: Relay unreachable"
-        End If
+        If Not m_paused Then lblStatus.Caption = "Status: Relay unreachable"
     End If
+
+    UpdateControlButtons
 End Sub
 
 Private Sub UpdatePermCheckboxes()
@@ -414,6 +543,180 @@ Private Sub RefreshAgentId()
     Dim id As String
     id = ExtractJson(h, "agent_id")
     If id <> "" Then m_agentId = id
+End Sub
+
+Private Sub UpdateControlButtons()
+    Dim running As Boolean
+    Dim installed As Boolean
+
+    running = IsMCPServerRunning()
+    installed = IsMCPServerInstalled()
+
+    btnStart.Enabled = Not running
+    btnStop.Enabled = running
+    btnInstall.Enabled = Not installed
+    btnUninstall.Enabled = installed
+    btnViewLog.Enabled = True
+End Sub
+
+Private Sub SyncHistory()
+    If m_agentId = "" Then Exit Sub
+
+    Dim raw As String
+    raw = GetHistory(m_agentId, m_sessionId, APP_SOURCE)
+    If Left$(raw, 7) = "ERROR: " Then Exit Sub
+
+    If m_sessionId = "" Then
+        Dim sid As String
+        sid = ExtractJson(raw, "session_id")
+        If sid <> "" Then m_sessionId = sid
+    End If
+
+    Call AppendMessagesFromHistory(raw)
+End Sub
+
+Private Sub AppendMessagesFromHistory(ByVal json As String)
+    Dim p As Long
+    Dim msgId As Long
+    Dim role As String
+    Dim content As String
+
+    p = 1
+    Do
+        p = InStr(p, json, """id"":")
+        If p = 0 Then Exit Do
+
+        msgId = Val(ReadScalarAt(json, p + 5))
+        role = LCase$(ExtractJsonAt(json, "role", p))
+        content = JsonUnescape(ExtractJsonAt(json, "content", p))
+
+        If msgId > m_lastMsgId Then
+            If role = "user" Then
+                AppendChat "You", CleanupDisplayedMessage(content)
+            ElseIf role = "assistant" Then
+                AppendChat "Assistant", content
+            ElseIf role = "system" Then
+                AppendChat "System", content
+            End If
+            m_lastMsgId = msgId
+        End If
+
+        p = p + 5
+    Loop
+End Sub
+
+Private Function CleanupDisplayedMessage(ByVal text As String) As String
+    Dim marker As String
+    marker = "]"
+    If Left$(text, 9) = "[Machine:" Then
+        Dim p As Long
+        p = InStr(text, marker)
+        If p > 0 Then
+            text = Trim$(Mid$(text, p + 1))
+        End If
+    End If
+    CleanupDisplayedMessage = text
+End Function
+
+Private Function ReadScalarAt(ByVal json As String, ByVal p As Long) As String
+    Dim q As Long
+    q = p
+    Do While q <= Len(json)
+        Dim c As String
+        c = Mid$(json, q, 1)
+        If c = "," Or c = "}" Or c = "]" Then Exit Do
+        q = q + 1
+    Loop
+    ReadScalarAt = Trim$(Mid$(json, p, q - p))
+End Function
+
+Private Function ExtractJsonAt(ByVal json As String, ByVal key As String, ByVal startPos As Long) As String
+    Dim kq As String, p As Long, q As Long
+    kq = """" & key & """:"
+    p = InStr(startPos, json, kq)
+    If p = 0 Then ExtractJsonAt = "": Exit Function
+    p = p + Len(kq)
+    Do While Mid$(json, p, 1) = " " Or Mid$(json, p, 1) = Chr$(9)
+        p = p + 1
+    Loop
+    If Mid$(json, p, 1) = """" Then
+        p = p + 1
+        q = p
+        Do While q <= Len(json)
+            If Mid$(json, q, 1) = """" And Mid$(json, q - 1, 1) <> "\" Then Exit Do
+            q = q + 1
+        Loop
+        If q > Len(json) Then ExtractJsonAt = "": Exit Function
+        ExtractJsonAt = Mid$(json, p, q - p)
+    Else
+        ExtractJsonAt = ReadScalarAt(json, p)
+    End If
+End Function
+
+Private Function JsonUnescape(ByVal text As String) As String
+    Dim s As String
+    s = text
+    s = Replace(s, "\n", vbCrLf)
+    s = Replace(s, "\r", "")
+    s = Replace(s, "\t", vbTab)
+    s = Replace(s, Chr$(92) & Chr$(34), Chr$(34))
+    s = Replace(s, Chr$(92) & Chr$(92), Chr$(92))
+    JsonUnescape = s
+End Function
+
+Private Function ReadTailFromFile(ByVal filePath As String, ByVal maxChars As Long) As String
+    On Error Resume Next
+    Dim ff As Integer
+    Dim content As String
+    ff = FreeFile
+    Open filePath For Input As #ff
+    content = Input$(LOF(ff), #ff)
+    Close #ff
+    If Len(content) > maxChars Then
+        ReadTailFromFile = Right$(content, maxChars)
+    Else
+        ReadTailFromFile = content
+    End If
+    On Error GoTo 0
+End Function
+
+Private Sub HideToTray()
+    Dim nid As NOTIFYICONDATA
+    If m_inTray Then
+        Me.Hide
+        Exit Sub
+    End If
+
+    nid.cbSize = Len(nid)
+    nid.hwnd = Me.hwnd
+    nid.uId = 1
+    nid.uFlags = NIF_ICON Or NIF_TIP Or NIF_MESSAGE
+    nid.uCallbackMessage = WM_MOUSEMOVE
+    nid.hIcon = Me.Icon.Handle
+    nid.szTip = "Win98Botter" & Chr$(0)
+    Call Shell_NotifyIconA(NIM_ADD, nid)
+
+    m_inTray = True
+    Me.Hide
+    lblStatus.Caption = "Status: Running in background"
+End Sub
+
+Private Sub RestoreFromTray()
+    If Not m_inTray Then Exit Sub
+    RemoveTrayIcon
+    Me.Show
+    Me.WindowState = vbNormal
+    Me.SetFocus
+End Sub
+
+Private Sub RemoveTrayIcon()
+    If Not m_inTray Then Exit Sub
+    Dim nid As NOTIFYICONDATA
+    nid.cbSize = Len(nid)
+    nid.hwnd = Me.hwnd
+    nid.uId = 1
+    Call Shell_NotifyIconA(NIM_DELETE, nid)
+    m_inTray = False
 End Sub
 
 ' Build comma-separated list of currently-enabled permission categories

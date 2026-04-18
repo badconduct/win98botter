@@ -31,7 +31,7 @@ if "%1"=="DEBUG=1" (
 )
 
 set SRCS=mcp_server.c file_ops.c exec_ops.c ini_ops.c registry_ops.c process_ops.c system_ops.c permissions.c ipc_ops.c cli_mode.c cJSON.c
-set LIBS=-lkernel32 -luser32 -ladvapi32 -lwsock32 -lwinmm
+set LIBS=-lkernel32 -luser32 -lgdi32 -ladvapi32 -lwsock32 -lwinmm
 
 echo.
 echo [BUILD] Compiling and linking with MinGW...

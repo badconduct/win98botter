@@ -64,7 +64,7 @@ link.exe /nologo /SUBSYSTEM:CONSOLE %LFLAGS% ^
     system_ops.obj  ^
     permissions.obj ^
     cJSON.obj       ^
-    kernel32.lib user32.lib advapi32.lib wsock32.lib winmm.lib
+    kernel32.lib user32.lib gdi32.lib advapi32.lib wsock32.lib winmm.lib
 
 if errorlevel 1 (
     echo.

@@ -888,7 +888,8 @@ int main(int argc, char *argv[])
                 pe.dwSize = sizeof(pe);
                 if (Process32First(hSnap, &pe)) {
                     do {
-                        if (lstrcmpiA(pe.szExeFile, "mcp_server.exe") == 0 &&
+                        if ((lstrcmpiA(pe.szExeFile, "mcp_server.exe") == 0 ||
+                             lstrcmpiA(pe.szExeFile, "win98-mcp-server.exe") == 0) &&
                             pe.th32ProcessID != GetCurrentProcessId()) {
                             HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE,
                                                        pe.th32ProcessID);
@@ -938,7 +939,8 @@ int main(int argc, char *argv[])
                 pe.dwSize = sizeof(pe);
                 if (Process32First(hSnap, &pe)) {
                     do {
-                        if (lstrcmpiA(pe.szExeFile, "mcp_server.exe") == 0 &&
+                        if ((lstrcmpiA(pe.szExeFile, "mcp_server.exe") == 0 ||
+                             lstrcmpiA(pe.szExeFile, "win98-mcp-server.exe") == 0) &&
                             pe.th32ProcessID != GetCurrentProcessId()) {
                             HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE,
                                                        pe.th32ProcessID);

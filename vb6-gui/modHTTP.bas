@@ -187,27 +187,49 @@ End Function
 ' session_id may be "" for the first message
 Public Function PostChat(ByVal msg As String, _
                          ByVal session_id As String, _
-                         ByVal agent_id As String) As String
+                         ByVal agent_id As String, _
+                         Optional ByVal source As String = "user") As String
     Dim body As String
-    ' Escape backslashes and quotes in msg
     Dim safe_msg As String
-    safe_msg = Replace(msg, "\\", "\\\\")
-    safe_msg = Replace(safe_msg, """", "\""")
-    If session_id <> "" And agent_id <> "" Then
-        body = "{""message"":""" & safe_msg & """,""session_id"":""" & session_id & """,""agent_id"":""" & agent_id & """}"
-    ElseIf session_id <> "" Then
-        body = "{""message"":""" & safe_msg & """,""session_id"":""" & session_id & """}"
-    ElseIf agent_id <> "" Then
-        body = "{""message"":""" & safe_msg & """,""agent_id"":""" & agent_id & """}"
-    Else
-        body = "{""message"":""" & safe_msg & """}"
-    End If
+    Dim safe_agent_id As String
+    Dim safe_session_id As String
+    Dim safe_source As String
+
+    safe_msg = EscapeJson(msg)
+    safe_agent_id = EscapeJson(agent_id)
+    safe_session_id = EscapeJson(session_id)
+    safe_source = EscapeJson(source)
+    If Len(Trim(safe_source)) = 0 Then safe_source = "user"
+
+    body = "{""message"":""" & safe_msg & """,""source"":""" & safe_source & """"
+    If session_id <> "" Then body = body & ",""session_id"":""" & safe_session_id & """"
+    If agent_id <> "" Then body = body & ",""agent_id"":""" & safe_agent_id & """"
+    body = body & "}"
+
     PostChat = HttpPost("/chat", body, 120000)
 End Function
 
 ' Get recent chat history; returns raw JSON
-Public Function GetHistory() As String
-    GetHistory = HttpGet("/history")
+Public Function GetHistory(Optional ByVal agent_id As String = "", _
+                           Optional ByVal session_id As String = "", _
+                           Optional ByVal source As String = "") As String
+    Dim path As String
+    path = "/history"
+
+    If agent_id <> "" Or session_id <> "" Or source <> "" Then
+        path = path & "?"
+        If agent_id <> "" Then path = path & "agent_id=" & EscapeQuery(agent_id)
+        If session_id <> "" Then
+            If Right$(path, 1) <> "?" Then path = path & "&"
+            path = path & "session_id=" & EscapeQuery(session_id)
+        End If
+        If source <> "" Then
+            If Right$(path, 1) <> "?" Then path = path & "&"
+            path = path & "source=" & EscapeQuery(source)
+        End If
+    End If
+
+    GetHistory = HttpGet(path)
 End Function
 
 ' Send a control command (pause / resume / disconnect)
@@ -243,6 +265,24 @@ End Function
 Private Function EscapeJson(ByVal value As String) As String
     Dim safe_value As String
     safe_value = Replace(value, "\", "\\")
-    safe_value = Replace(safe_value, """", "\"")
+    safe_value = Replace(safe_value, Chr$(34), Chr$(92) & Chr$(34))
+    safe_value = Replace(safe_value, vbCrLf, "\n")
+    safe_value = Replace(safe_value, vbCr, "\n")
+    safe_value = Replace(safe_value, vbLf, "\n")
+    safe_value = Replace(safe_value, vbTab, "\t")
     EscapeJson = safe_value
+End Function
+
+Private Function EscapeQuery(ByVal value As String) As String
+    Dim s As String
+    s = value
+    s = Replace(s, "%", "%25")
+    s = Replace(s, " ", "%20")
+    s = Replace(s, "\", "%5C")
+    s = Replace(s, "/", "%2F")
+    s = Replace(s, ":", "%3A")
+    s = Replace(s, "?", "%3F")
+    s = Replace(s, "&", "%26")
+    s = Replace(s, "=", "%3D")
+    EscapeQuery = s
 End Function

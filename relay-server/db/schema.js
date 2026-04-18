@@ -26,11 +26,15 @@ function initDb(dbPath) {
     CREATE TABLE IF NOT EXISTS sessions (
       id          TEXT PRIMARY KEY,
       agent_id    TEXT,
+      source      TEXT DEFAULT 'administrator',
       started_at  TEXT NOT NULL,
       win98_host  TEXT,
       llm_model   TEXT,
       token_total INTEGER DEFAULT 0
     );
+
+    CREATE INDEX IF NOT EXISTS idx_sessions_agent_source_started
+      ON sessions(agent_id, source, started_at);
 
     CREATE TABLE IF NOT EXISTS messages (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,6 +134,15 @@ function initDb(dbPath) {
     db.exec(
       'UPDATE file_locations SET exists_flag = COALESCE(exists_flag, "exists", 1)',
     );
+  }
+
+  const sessionCols = db.prepare("PRAGMA table_info(sessions)").all();
+  const hasSessionSource = sessionCols.some((c) => c.name === "source");
+  if (!hasSessionSource) {
+    db.exec(
+      "ALTER TABLE sessions ADD COLUMN source TEXT DEFAULT 'administrator'",
+    );
+    db.exec("UPDATE sessions SET source = COALESCE(source, 'administrator')");
   }
 
   return db;

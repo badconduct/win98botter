@@ -36,10 +36,11 @@ export const api = {
   sendChat: (body) => request("POST", "/chat", body),
 
   // History
-  getHistory: (agentId, sessionId) => {
+  getHistory: (agentId, sessionId, source) => {
     const q = new URLSearchParams();
     if (agentId) q.set("agent_id", agentId);
     if (sessionId) q.set("session_id", sessionId);
+    if (source) q.set("source", source);
     return request("GET", `/history?${q}`);
   },
 

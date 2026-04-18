@@ -3,6 +3,7 @@ import { api } from "../api/index.js";
 
 const POLL_MS = 5000;
 const MAX_MSGS = 200;
+const CHAT_SOURCE = "administrator";
 
 /**
  * ChatPanel — shows the session message history for this agent,
@@ -21,7 +22,7 @@ export default function ChatPanel({ agent }) {
   const fetchHistory = useCallback(async () => {
     if (!agentId) return;
     try {
-      const data = await api.getHistory(agentId);
+      const data = await api.getHistory(agentId, undefined, CHAT_SOURCE);
       setMessages((data?.messages ?? []).slice(-MAX_MSGS));
     } catch {
       /* silently ignore poll errors */
@@ -51,7 +52,11 @@ export default function ChatPanel({ agent }) {
       const customPrefix =
         localStorage.getItem("win98botter.customSystemPrompt") ?? "";
       const message = customPrefix ? `${customPrefix}\n\n${text}` : text;
-      await api.sendChat({ message, agent_id: agentId });
+      await api.sendChat({
+        message,
+        agent_id: agentId,
+        source: CHAT_SOURCE,
+      });
       await fetchHistory();
     } catch (e) {
       setError(e.message);
@@ -70,7 +75,7 @@ export default function ChatPanel({ agent }) {
   return (
     <div style={styles.root}>
       <div style={styles.header}>
-        <span style={styles.title}>Chat</span>
+        <span style={styles.title}>Admin Chat</span>
         {agent.hostname && (
           <span style={styles.agentLabel}>{agent.hostname}</span>
         )}
