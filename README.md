@@ -51,6 +51,7 @@ Win98Botter is designed as a **modern control and assistance layer for real Wind
 
 - The web dashboard provides the main control surface for operators.
 - It includes agent tabs, setup and settings pages, log viewing, chat history, system prompt inspection, permission toggles, and file activity views.
+- The Settings flow now also exposes the optional PostgreSQL Phase 1 cache directly in the application, so users can enable or disable it themselves and edit the connection details without manually editing files.
 - Health and status reporting are implemented so you can quickly see whether the relay and connected agents are alive and responding.
 
 ### 📸 Screenshot and visual troubleshooting
@@ -83,12 +84,13 @@ The project uses **two persistence layers**, each with a different job:
 
 This feature is **optional** and can be toggled without changing the rest of the application design.
 
-- **Enable it in the app**: open the settings screen and use the **Enable PostgreSQL Phase 1 map cache** toggle in the ports and storage step.
+- **Enable it in the app**: open the Settings screen and use the **Enable PostgreSQL Phase 1 map cache** toggle in the ports and storage section.
 - **Disable it in the app**: turn that same toggle off.
+- **Configure it in the app**: the same Settings area lets users manage the PostgreSQL host, port, database name, username, password, and SSL mode.
 - **Configure it manually**: edit the relay environment file and set:
   - `PHASE1_PG_ENABLED=1` to enable it
   - `PHASE1_PG_ENABLED=0` to disable it
-- The same configuration area also controls the PostgreSQL host, port, database name, user, password, and SSL mode.
+- These values are stored in the relay application's own configuration, and existing DB settings remain in place unless the user explicitly changes them.
 - When disabled, Win98Botter continues to work normally using **SQLite only** for operational history and cached file activity.
 
 In practice, SQLite is the project’s day-to-day audit trail, while PostgreSQL is the deeper environment-mapping layer for building a reusable knowledge base of each machine.
@@ -157,10 +159,11 @@ win98botter/
 ## Quick Start (Current Dev Flow)
 
 1. Start the relay stack from `relay-server`.
-2. Configure the model endpoint and base URL in setup and settings.
+2. Configure the model endpoint, relay settings, and optional PostgreSQL cache in the Setup or Settings screens.
 3. Build `win98-mcp-agent` version **0.9** using **Visual Studio 6 on Windows 98 SE**, then start the agent in the desired mode.
 4. If you want visual capture, enable `screenshot=1` in the agent permissions file and restart the agent.
-5. Connect through the web dashboard or the VB6 client.
+5. If you enable the PostgreSQL Phase 1 cache, confirm the DB connection values in Settings and restart the relay if needed.
+6. Connect through the web dashboard or the VB6 client.
 
 **Agent startup flags:**
 
