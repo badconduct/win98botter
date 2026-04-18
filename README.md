@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="./win98botter.png" alt="Win98Botter" width="720">
-</p>
+![Windows 98 Botter Logo](image.png)
 
 # Win98Botter
 
