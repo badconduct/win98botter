@@ -44,6 +44,13 @@ export default function Setup({ onDone, mode = "setup" }) {
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [httpPort, setHttpPort] = useState("3000");
   const [tcpPort, setTcpPort] = useState("9000");
+  const [phase1Enabled, setPhase1Enabled] = useState(false);
+  const [phase1Host, setPhase1Host] = useState("postgres");
+  const [phase1Port, setPhase1Port] = useState("5432");
+  const [phase1Database, setPhase1Database] = useState("win98botter");
+  const [phase1User, setPhase1User] = useState("win98botter");
+  const [phase1Password, setPhase1Password] = useState("");
+  const [phase1Ssl, setPhase1Ssl] = useState(false);
 
   // Connection test state
   const [testState, setTestState] = useState("idle"); // idle | testing | ok | fail
@@ -89,6 +96,13 @@ export default function Setup({ onDone, mode = "setup" }) {
         setModel(config.BOT_MODEL || DEFAULT_MODEL);
         setHttpPort(config.HTTP_PORT || "3000");
         setTcpPort(config.WIN98_LISTEN_PORT || "9000");
+        setPhase1Enabled((config.PHASE1_PG_ENABLED || "0") === "1");
+        setPhase1Host(config.PHASE1_PG_HOST || "postgres");
+        setPhase1Port(config.PHASE1_PG_PORT || "5432");
+        setPhase1Database(config.PHASE1_PG_DATABASE || "win98botter");
+        setPhase1User(config.PHASE1_PG_USER || "win98botter");
+        setPhase1Password(config.PHASE1_PG_PASSWORD || "");
+        setPhase1Ssl((config.PHASE1_PG_SSL || "0") === "1");
 
         const providerMatch = PROVIDERS.findIndex(
           (provider) =>
@@ -149,6 +163,13 @@ export default function Setup({ onDone, mode = "setup" }) {
         BOT_MODEL: model,
         HTTP_PORT: httpPort,
         WIN98_LISTEN_PORT: tcpPort,
+        PHASE1_PG_ENABLED: phase1Enabled ? "1" : "0",
+        PHASE1_PG_HOST: phase1Host,
+        PHASE1_PG_PORT: phase1Port,
+        PHASE1_PG_DATABASE: phase1Database,
+        PHASE1_PG_USER: phase1User,
+        PHASE1_PG_PASSWORD: phase1Password,
+        PHASE1_PG_SSL: phase1Ssl ? "1" : "0",
       });
       setStep(3);
     } catch (e) {
@@ -340,8 +361,9 @@ export default function Setup({ onDone, mode = "setup" }) {
         {step === 2 && (
           <div style={styles.body}>
             <p style={styles.hint}>
-              The relay server needs two ports. Defaults are fine for most
-              setups.
+              Configure the relay ports and the optional PostgreSQL Phase 1 map
+              cache. If you leave the cache disabled, the app will continue to
+              use SQLite only.
             </p>
 
             <label style={styles.label}>HTTP port (web GUI + API)</label>
@@ -360,6 +382,88 @@ export default function Setup({ onDone, mode = "setup" }) {
               placeholder="9000"
             />
 
+            <div style={styles.advancedPanel}>
+              <label style={styles.checkboxRow}>
+                <input
+                  type="checkbox"
+                  checked={phase1Enabled}
+                  onChange={(e) => setPhase1Enabled(e.target.checked)}
+                  style={styles.checkbox}
+                />
+                <span style={styles.checkboxLabel}>
+                  Enable PostgreSQL Phase 1 map cache
+                </span>
+              </label>
+              <p style={styles.providerNote}>
+                Toggle this on to persist directory scans, file-read captures,
+                and registry captures in PostgreSQL. Toggle it off to keep the
+                feature disabled and use SQLite-only operation.
+              </p>
+
+              {phase1Enabled && (
+                <>
+                  <label style={styles.label}>PostgreSQL host</label>
+                  <input
+                    style={styles.input}
+                    value={phase1Host}
+                    onChange={(e) => setPhase1Host(e.target.value)}
+                    placeholder="postgres"
+                  />
+
+                  <label style={styles.label}>PostgreSQL port</label>
+                  <input
+                    style={styles.input}
+                    value={phase1Port}
+                    onChange={(e) => setPhase1Port(e.target.value)}
+                    placeholder="5432"
+                  />
+
+                  <label style={styles.label}>Database name</label>
+                  <input
+                    style={styles.input}
+                    value={phase1Database}
+                    onChange={(e) => setPhase1Database(e.target.value)}
+                    placeholder="win98botter"
+                  />
+
+                  <label style={styles.label}>Database user</label>
+                  <input
+                    style={styles.input}
+                    value={phase1User}
+                    onChange={(e) => setPhase1User(e.target.value)}
+                    placeholder="win98botter"
+                  />
+
+                  <label style={styles.label}>Database password</label>
+                  <input
+                    style={styles.input}
+                    type="password"
+                    value={phase1Password}
+                    onChange={(e) => setPhase1Password(e.target.value)}
+                    placeholder="password"
+                    autoComplete="off"
+                  />
+
+                  <label style={styles.checkboxRow}>
+                    <input
+                      type="checkbox"
+                      checked={phase1Ssl}
+                      onChange={(e) => setPhase1Ssl(e.target.checked)}
+                      style={styles.checkbox}
+                    />
+                    <span style={styles.checkboxLabel}>
+                      Use SSL for PostgreSQL
+                    </span>
+                  </label>
+                </>
+              )}
+            </div>
+
+            <p style={styles.providerNote}>
+              Note: LLM settings apply immediately, but port or PostgreSQL cache
+              changes may require a relay restart.
+            </p>
+
             {error && <p style={styles.error}>{error}</p>}
 
             <div style={styles.actions}>
@@ -376,9 +480,10 @@ export default function Setup({ onDone, mode = "setup" }) {
         {step === 3 && (
           <div style={styles.body}>
             <p style={styles.hint}>
-              Configuration saved and applied — no restart needed. Click below
-              to {isSettings ? "return to the dashboard" : "open the dashboard"}
-              .
+              Configuration saved. LLM settings are applied immediately, while
+              listener port and PostgreSQL cache changes may require a relay
+              restart. Click below to{" "}
+              {isSettings ? "return to the dashboard" : "open the dashboard"}.
             </p>
             <div style={styles.actions}>
               <span />
@@ -438,7 +543,7 @@ const styles = {
     background: "#0f0f1a",
   },
   card: {
-    width: 480,
+    width: 560,
     background: "#1e1e2e",
     borderRadius: 12,
     border: "1px solid #333",
@@ -529,6 +634,27 @@ const styles = {
     color: "#e0e0e0",
     fontSize: 13,
     outline: "none",
+  },
+  advancedPanel: {
+    marginTop: 16,
+    padding: 12,
+    borderRadius: 8,
+    background: "#171726",
+    border: "1px solid #2f2f46",
+  },
+  checkboxRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+    color: "#d0d0e0",
+    fontSize: 13,
+  },
+  checkbox: {
+    accentColor: "#6030a0",
+  },
+  checkboxLabel: {
+    fontWeight: 600,
   },
 
   error: { color: "#f87171", fontSize: 12, marginTop: 10 },

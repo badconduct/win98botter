@@ -61,6 +61,13 @@ async function configRoutes(fastify, opts) {
       DB_PATH: env.DB_PATH || "",
       LOG_LEVEL: env.LOG_LEVEL || "info",
       SESSION_CONTEXT_TOKEN_BUDGET: env.SESSION_CONTEXT_TOKEN_BUDGET || "80000",
+      PHASE1_PG_ENABLED: env.PHASE1_PG_ENABLED || "0",
+      PHASE1_PG_HOST: env.PHASE1_PG_HOST || "postgres",
+      PHASE1_PG_PORT: env.PHASE1_PG_PORT || "5432",
+      PHASE1_PG_DATABASE: env.PHASE1_PG_DATABASE || "win98botter",
+      PHASE1_PG_USER: env.PHASE1_PG_USER || "win98botter",
+      PHASE1_PG_PASSWORD: env.PHASE1_PG_PASSWORD ? "••••••••" : "",
+      PHASE1_PG_SSL: env.PHASE1_PG_SSL || "0",
     });
   });
 
@@ -86,6 +93,13 @@ async function configRoutes(fastify, opts) {
               enum: ["trace", "debug", "info", "warn", "error"],
             },
             SESSION_CONTEXT_TOKEN_BUDGET: { type: "string" },
+            PHASE1_PG_ENABLED: { type: "string" },
+            PHASE1_PG_HOST: { type: "string" },
+            PHASE1_PG_PORT: { type: "string" },
+            PHASE1_PG_DATABASE: { type: "string" },
+            PHASE1_PG_USER: { type: "string" },
+            PHASE1_PG_PASSWORD: { type: "string" },
+            PHASE1_PG_SSL: { type: "string" },
           },
           additionalProperties: false,
         },
@@ -100,6 +114,7 @@ async function configRoutes(fastify, opts) {
       const newEnv = { ...existing };
       for (const [k, v] of Object.entries(body)) {
         if (k === "BOT_API_KEY" && v === "••••••••") continue; // leave existing
+        if (k === "PHASE1_PG_PASSWORD" && v === "••••••••") continue;
         if (v !== "") newEnv[k] = v;
       }
 
@@ -116,8 +131,12 @@ async function configRoutes(fastify, opts) {
         opts.llm._anthropic = isAnthropic(newEnv.BOT_API_URL);
       }
 
-      fastify.log.info("Config updated via /api/config — applied in-memory");
-      return reply.send({ success: true });
+      fastify.log.info("Config updated via /api/config — saved to .env");
+      return reply.send({
+        success: true,
+        restart_required: true,
+        note: "LLM changes are applied immediately. Port and PostgreSQL cache changes may require a relay restart.",
+      });
     },
   );
 

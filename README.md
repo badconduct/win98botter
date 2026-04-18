@@ -79,6 +79,18 @@ The project uses **two persistence layers**, each with a different job:
   - file read captures
   - registry captures
 
+### ⚙️ Enabling or disabling the PostgreSQL cache
+
+This feature is **optional** and can be toggled without changing the rest of the application design.
+
+- **Enable it in the app**: open the settings screen and use the **Enable PostgreSQL Phase 1 map cache** toggle in the ports and storage step.
+- **Disable it in the app**: turn that same toggle off.
+- **Configure it manually**: edit the relay environment file and set:
+  - `PHASE1_PG_ENABLED=1` to enable it
+  - `PHASE1_PG_ENABLED=0` to disable it
+- The same configuration area also controls the PostgreSQL host, port, database name, user, password, and SSL mode.
+- When disabled, Win98Botter continues to work normally using **SQLite only** for operational history and cached file activity.
+
 In practice, SQLite is the project’s day-to-day audit trail, while PostgreSQL is the deeper environment-mapping layer for building a reusable knowledge base of each machine.
 
 ### 🧰 Win98 agent runtime features
