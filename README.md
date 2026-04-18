@@ -18,22 +18,74 @@ Do not treat modern toolchain builds (newer MSVC/MinGW) as production-equivalent
 
 ---
 
-## Current Capabilities
+## 🚀 Current Capabilities
 
-1. Relay, UI, and agent connectivity paths are functional.
-2. Agent-aware health and status reporting is implemented.
-3. Setup and settings UX is implemented in the web UI and can test and save model endpoint config.
-4. Agent lifecycle UX includes removal from dashboard tabs.
-5. Log viewer supports level filtering for troubleshooting.
-6. Win98 agent supports background service-style operation and local IPC and CLI usage.
-7. Win98 agent writes persistent logs with INI-configurable verbosity.
-8. Screenshot capture is supported end-to-end through the relay, with a dedicated permission toggle in the web UI.
-9. Relay caches screenshot files and metadata in SQLite tool history and file cache records.
-10. Relay includes PostgreSQL-backed Phase 1 map cache endpoints for:
+Win98Botter is designed as a **modern control and assistance layer for real Windows 98 machines**. Instead of treating each old PC as an isolated box, this project gives you a central relay, a browser dashboard, an AI operator, and an auditable tool pipeline that can inspect, troubleshoot, and act on one or more connected systems.
 
-- Directory scan captures
-- File read captures
-- Registry captures
+### 🖧 Multi-agent relay and remote control
+
+- The relay server accepts **multiple live Win98 agent connections at the same time**.
+- Each connected machine is tracked as its own agent, with live status, heartbeat, hostname, and connection details.
+- The dashboard lets you **switch between agents**, work on a specific target machine, and remove stale/offline entries when needed.
+- If no machine is explicitly selected, the relay can fall back to the default live agent.
+
+### 🤖 AI-assisted operations on the target machine
+
+- The Node.js relay is the **main orchestration brain**: it handles chat requests, builds context, calls the LLM, and decides which Win98 tools to run.
+- Through the agent, the system can perform real machine actions such as:
+  - reading and writing files
+  - browsing directories and cached file activity
+  - reading and updating INI or registry values
+  - launching commands and scripts
+  - inspecting processes, windows, and system state
+  - capturing screenshots for visual troubleshooting
+- This makes the project useful for **legacy system administration, remote diagnostics, software repair, config editing, and historical environment inspection**.
+
+### 🛡️ Permission-aware safety model
+
+- Tool use is filtered by per-agent permissions before anything is executed on the Win98 side.
+- Permissions can be adjusted from the web UI and pushed to the agent at runtime.
+- That safety layer now includes **screenshot permission**, so visual capture can be explicitly enabled or disabled.
+
+### 🌐 Web UI and operator workflow
+
+- The web dashboard provides the main control surface for operators.
+- It includes agent tabs, setup and settings pages, log viewing, chat history, system prompt inspection, permission toggles, and file activity views.
+- Health and status reporting are implemented so you can quickly see whether the relay and connected agents are alive and responding.
+
+### 📸 Screenshot and visual troubleshooting
+
+- Screenshot capture is supported **end-to-end** through the relay and the Win98 agent.
+- The UI includes a dedicated screenshot permission toggle.
+- When the AI needs visual confirmation, it can request a screenshot if allowed, and the relay can then read and cache the resulting BMP correctly.
+
+### 🗃️ What the databases are for
+
+The project uses **two persistence layers**, each with a different job:
+
+- **SQLite** is the operational history store used by the relay. It keeps:
+  - known agents
+  - chat sessions
+  - messages
+  - tool call history
+  - file change history
+  - cached file locations
+  - cached file contents
+  - directory tree data
+  - screenshot metadata and cached screenshot content
+
+- **PostgreSQL** is the optional **Phase 1 map cache** used for structured environment capture and analysis, including:
+  - directory scan captures
+  - file read captures
+  - registry captures
+
+In practice, SQLite is the project’s day-to-day audit trail, while PostgreSQL is the deeper environment-mapping layer for building a reusable knowledge base of each machine.
+
+### 🧰 Win98 agent runtime features
+
+- The Win98 agent supports **background service-style operation**, local IPC, and CLI usage.
+- It writes persistent logs with INI-configurable verbosity.
+- It acts as the execution layer for the relay, returning structured results back to the modern control plane.
 
 ---
 
