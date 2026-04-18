@@ -50,3 +50,6 @@ audio=1
 
 ; Display settings (set_display_settings, set_desktop_appearance)
 display=1
+
+; Screenshot capture (capture_screenshot)
+screenshot=0

@@ -48,7 +48,7 @@
 /* ── Versions ────────────────────────────────────────────────────────────── */
 #define SERVER_NAME    "Win98MCPAgent"
 /* Update SERVER_VERSION whenever shipping behavior or protocol changes. */
-#define SERVER_VERSION "0.8"
+#define SERVER_VERSION "0.9"
 #define MCP_PROTOCOL   "1.0"
 
 /* ── WIN32 target ────────────────────────────────────────────────────────── */

@@ -23,6 +23,8 @@ const { schemaList, openaiSchemaList } = require("../win98/tools");
 const queries = require("../db/queries");
 
 const MAX_LOOP_ITERATIONS = 20;
+const REMOTE_FILE_CHUNK_BYTES = 32768;
+const MAX_SCREENSHOT_CACHE_BYTES = 8 * 1024 * 1024;
 
 const PERMISSION_PHRASES = {
   file_read: [
@@ -40,6 +42,12 @@ const PERMISSION_PHRASES = {
   hardware_io: ["hardware_io", "hardware io"],
   serial: ["serial"],
   scheduler: ["scheduler"],
+  screenshot: [
+    "screenshot",
+    "screenshot permission",
+    "screenshot access",
+    "visual capture",
+  ],
   system: ["system permission", "system tools"],
 };
 
@@ -335,80 +343,37 @@ class AgentLoop {
         const agentId = this.selectedAgentId || this.win98.agentId;
         if (agentId && staged && !staged.error) {
           try {
-            const filePath = input.path;
-            const fileName = filePath.split(/[\\\/]/).pop();
+            const fallbackContent = JSON.stringify(staged.parsed || {}).slice(
+              0,
+              65536,
+            );
+            const cacheInfo = this._storeCachedFileSnapshot(
+              agentId,
+              input.path,
+              {
+                content:
+                  typeof staged.content === "string" &&
+                  staged.content.length > 0
+                    ? staged.content
+                    : fallbackContent,
+                bytesStored:
+                  staged.staged_bytes ||
+                  Buffer.byteLength(
+                    typeof staged.content === "string"
+                      ? staged.content
+                      : fallbackContent,
+                    "utf8",
+                  ),
+                fileSizeBytes: staged.file_size || staged.staged_bytes || null,
+                mimeType: staged.mime_type || this._mimeTypeForPath(input.path),
+                isTextFile: staged.is_text !== false,
+              },
+            );
 
-            // Get or record the file location
-            queries.recordFileLocation(agentId, fileName, filePath);
-
-            // Get the file_locations ID to use as FK for file_contents
-            const db = require("../db/schema").getDb();
-            const fileRecord = db
-              .prepare(
-                `SELECT id FROM file_locations 
-               WHERE agent_id = ? AND file_name = ? AND discovered_path = ?
-               ORDER BY id DESC LIMIT 1`,
-              )
-              .get(agentId, fileName, filePath);
-
-            if (fileRecord && staged.content) {
-              // Detect MIME type from extension
-              const ext = fileName.split(".").pop().toLowerCase();
-              const textExtensions = [
-                "txt",
-                "ini",
-                "cfg",
-                "bat",
-                "com",
-                "sys",
-                "log",
-                "asm",
-                "c",
-                "h",
-                "cpp",
-                "java",
-                "py",
-                "js",
-              ];
-              const isTextFile = textExtensions.includes(ext);
-
-              // Store the content
-              const contentBytes = Buffer.byteLength(staged.content, "utf8");
-              queries.storeFileContent(
-                fileRecord.id,
-                null, // lineStart (null = first bytes/full file)
-                null, // lineEnd
-                staged.content,
-                contentBytes,
-              );
-
-              // Update file metadata (MIME type, text flag, size)
-              let mimeType = "application/octet-stream";
-              if (isTextFile) mimeType = "text/plain";
-              else if (ext === "jpg" || ext === "jpeg") mimeType = "image/jpeg";
-              else if (ext === "png") mimeType = "image/png";
-
-              queries.updateFileMetadata(
-                fileRecord.id,
-                mimeType,
-                isTextFile ? 1 : 0,
-                contentBytes,
-              );
-
-              this.log.debug(
-                {
-                  agentId,
-                  fileName,
-                  path: filePath,
-                  bytes: contentBytes,
-                  mimeType,
-                },
-                "Stored file content in cache",
-              );
-            }
-
-            // Also record the directory tree entry
-            queries.recordDirectoryTreeEntry(agentId, filePath, false);
+            this.log.debug(
+              { agentId, path: input.path, cacheInfo },
+              "Stored staged file content in cache",
+            );
           } catch (cacheErr) {
             this.log.warn(
               { error: cacheErr.message },
@@ -445,6 +410,27 @@ class AgentLoop {
         durMs,
       );
       return { error: err.message };
+    }
+
+    if (
+      name === "capture_screenshot" &&
+      result &&
+      !result.error &&
+      result.path
+    ) {
+      try {
+        const cacheInfo = await this._cacheCapturedScreenshot(result.path);
+        result = { ...result, db_cache: cacheInfo };
+      } catch (cacheErr) {
+        this.log.warn(
+          { error: cacheErr.message, path: result.path },
+          "Failed to cache captured screenshot",
+        );
+        result = {
+          ...result,
+          db_cache: { cached: false, error: cacheErr.message },
+        };
+      }
     }
 
     const durMs = Date.now() - startMs;
@@ -581,6 +567,166 @@ class AgentLoop {
     }
 
     return result;
+  }
+
+  _mimeTypeForPath(filePath) {
+    const ext = String(filePath || "")
+      .split(".")
+      .pop()
+      .toLowerCase();
+
+    switch (ext) {
+      case "txt":
+      case "ini":
+      case "cfg":
+      case "log":
+      case "bat":
+      case "cmd":
+      case "reg":
+      case "c":
+      case "h":
+      case "cpp":
+      case "asm":
+      case "js":
+      case "json":
+      case "md":
+      case "xml":
+      case "html":
+      case "htm":
+        return "text/plain";
+      case "bmp":
+        return "image/bmp";
+      case "png":
+        return "image/png";
+      case "jpg":
+      case "jpeg":
+        return "image/jpeg";
+      case "gif":
+        return "image/gif";
+      default:
+        return "application/octet-stream";
+    }
+  }
+
+  _storeCachedFileSnapshot(agentId, filePath, snapshot) {
+    if (!agentId || !filePath) return null;
+
+    const fileName = String(filePath)
+      .split(/[\\\/]/)
+      .pop();
+    if (!fileName) return null;
+
+    queries.recordFileLocation(agentId, fileName, filePath);
+    const fileRecord = queries.getFileLocationByPath(agentId, filePath);
+    if (!fileRecord) return null;
+
+    const content =
+      typeof snapshot.content === "string" ? snapshot.content : "";
+    const bytesStored =
+      Number(snapshot.bytesStored) || Buffer.byteLength(content, "utf8");
+    const fileSizeBytes = Number(snapshot.fileSizeBytes) || bytesStored || null;
+    const mimeType = snapshot.mimeType || this._mimeTypeForPath(filePath);
+    const isTextFile =
+      snapshot.isTextFile !== undefined
+        ? !!snapshot.isTextFile
+        : mimeType.startsWith("text/");
+
+    if (content) {
+      queries.storeFileContent(fileRecord.id, null, null, content, bytesStored);
+    }
+
+    queries.updateFileMetadata(
+      fileRecord.id,
+      mimeType,
+      isTextFile,
+      fileSizeBytes,
+    );
+    queries.recordDirectoryTreeEntry(agentId, filePath, false);
+
+    return {
+      file_location_id: fileRecord.id,
+      mime_type: mimeType,
+      is_text_file: isTextFile,
+      bytes_stored: bytesStored,
+      file_size_bytes: fileSizeBytes,
+    };
+  }
+
+  async _cacheCapturedScreenshot(filePath) {
+    const agentId = this.selectedAgentId || this.win98.agentId;
+    if (!agentId || !filePath) {
+      return { cached: false, error: "missing_agent_or_path" };
+    }
+
+    const info = await this.win98.callTool("get_file_info", { path: filePath });
+    if (!info || info.error) {
+      return {
+        cached: false,
+        error: info && info.error ? info.error : "get_file_info_failed",
+      };
+    }
+    if (!info.exists) {
+      return { cached: false, error: "screenshot_not_found" };
+    }
+
+    const totalSize = Number(info.size_bytes ?? info.size ?? 0);
+    const buffers = [];
+    let offset = 0;
+    let reachedEof = false;
+
+    while (
+      !reachedEof &&
+      offset < totalSize &&
+      offset < MAX_SCREENSHOT_CACHE_BYTES
+    ) {
+      const readResult = await this.win98.callTool("read_file", {
+        path: filePath,
+        offset,
+        length: Math.min(
+          REMOTE_FILE_CHUNK_BYTES,
+          MAX_SCREENSHOT_CACHE_BYTES - offset,
+        ),
+      });
+
+      if (!readResult || readResult.error) {
+        throw new Error(
+          readResult && readResult.error
+            ? readResult.error
+            : "read_file_failed",
+        );
+      }
+
+      const chunkBuffer =
+        typeof readResult.data_b64 === "string"
+          ? Buffer.from(readResult.data_b64, "base64")
+          : Buffer.from(readResult.content || "", "utf8");
+
+      if (chunkBuffer.length === 0) break;
+      buffers.push(chunkBuffer);
+
+      const bytesRead = Number(
+        readResult.bytes_read ?? readResult.length ?? chunkBuffer.length,
+      );
+      offset += bytesRead > 0 ? bytesRead : chunkBuffer.length;
+      reachedEof = readResult.eof === true || readResult.eof === 1;
+    }
+
+    const screenshotBuffer = Buffer.concat(buffers);
+    const cacheInfo = this._storeCachedFileSnapshot(agentId, filePath, {
+      content: screenshotBuffer.toString("base64"),
+      bytesStored: screenshotBuffer.length,
+      fileSizeBytes: totalSize || screenshotBuffer.length,
+      mimeType: "image/bmp",
+      isTextFile: false,
+    });
+
+    return {
+      cached: !!cacheInfo,
+      truncated:
+        totalSize > screenshotBuffer.length ||
+        screenshotBuffer.length >= MAX_SCREENSHOT_CACHE_BYTES,
+      ...cacheInfo,
+    };
   }
 
   async _capturePhase1FromToolResult(name, input, result, sessionId, durMs) {

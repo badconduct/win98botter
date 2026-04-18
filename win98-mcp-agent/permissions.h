@@ -25,6 +25,7 @@ typedef struct {
     int scheduler;
     int audio;
     int display;
+    int screenshot;
 } Permissions;
 
 void             permissions_load(const char *ini_path);

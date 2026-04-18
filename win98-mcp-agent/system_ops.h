@@ -18,6 +18,7 @@ cJSON *tool_load_vxd(cJSON *params);
 cJSON *tool_get_window_list(cJSON *params);
 cJSON *tool_send_window_message(cJSON *params);
 cJSON *tool_read_clipboard(cJSON *params);
+cJSON *tool_capture_screenshot(cJSON *params);
 cJSON *tool_get_comm_port_state(cJSON *params);
 cJSON *tool_read_serial(cJSON *params);
 cJSON *tool_write_serial(cJSON *params);

@@ -92,6 +92,7 @@ const TOOL_PERMISSIONS = {
   get_window_list: "system",
   send_window_message: "system",
   read_clipboard: "system",
+  capture_screenshot: "screenshot",
   get_audio_devices: "system",
   get_midi_devices: "system",
 };
@@ -109,6 +110,7 @@ class PermissionsManager {
       hardware_io: false,
       serial: false,
       scheduler: false,
+      screenshot: false,
       system: true,
     };
   }
@@ -133,6 +135,7 @@ class PermissionsManager {
       load_vxd: "hardware_io",
       serial: "serial",
       scheduler: "scheduler",
+      screenshot: "screenshot",
       audio: "system",
       display: "system",
     };
@@ -203,6 +206,7 @@ class PermissionsManager {
     toolLevel.modify_sysconfig = this._perms.file_write;
     toolLevel.serial = this._perms.serial;
     toolLevel.scheduler = this._perms.scheduler;
+    toolLevel.screenshot = this._perms.screenshot;
     toolLevel.audio = this._perms.system;
     toolLevel.display = this._perms.system;
 

@@ -7,6 +7,7 @@
  *   set_display_settings, set_desktop_appearance,
  *   read_port, write_port, load_vxd,
  *   get_window_list, send_window_message, read_clipboard,
+ *   capture_screenshot,
  *   get_comm_port_state, read_serial, write_serial,
  *   get_audio_devices, get_midi_devices
  *
@@ -26,6 +27,101 @@
 #include "config.h"
 #include "system_ops.h"
 #include "cJSON.h"
+
+/* ── screenshot helpers ───────────────────────────────────────────────────── */
+
+static void build_default_screenshot_path(char *out_path, int out_size)
+{
+    SYSTEMTIME st;
+    (void)out_size;
+    if (!out_path) return;
+
+    CreateDirectoryA(BASE_DIR, NULL);
+    CreateDirectoryA(TEMP_DIR, NULL);
+    GetLocalTime(&st);
+    wsprintfA(out_path,
+              "%s\\shot_%04d%02d%02d_%02d%02d%02d.bmp",
+              TEMP_DIR,
+              st.wYear, st.wMonth, st.wDay,
+              st.wHour, st.wMinute, st.wSecond);
+}
+
+static int save_bitmap_to_bmp(HBITMAP h_bitmap, const char *path)
+{
+    BITMAP bmp;
+    BITMAPINFOHEADER bi;
+    BITMAPFILEHEADER bmf;
+    DWORD image_size;
+    HANDLE h_dib;
+    unsigned char *bits;
+    HDC hdc;
+    FILE *f;
+    int ok;
+
+    if (!h_bitmap || !path) return 0;
+    hdc = GetDC(NULL);
+    if (!hdc) return 0;
+
+    ZeroMemory(&bmp, sizeof(bmp));
+    if (!GetObject(h_bitmap, sizeof(BITMAP), &bmp)) {
+        ReleaseDC(NULL, hdc);
+        return 0;
+    }
+
+    ZeroMemory(&bi, sizeof(bi));
+    bi.biSize = sizeof(BITMAPINFOHEADER);
+    bi.biWidth = bmp.bmWidth;
+    bi.biHeight = bmp.bmHeight;
+    bi.biPlanes = 1;
+    bi.biBitCount = 24;
+    bi.biCompression = BI_RGB;
+
+    image_size = (DWORD)((((bmp.bmWidth * bi.biBitCount) + 31) / 32) * 4 * bmp.bmHeight);
+    h_dib = GlobalAlloc(GHND, image_size);
+    if (!h_dib) {
+        ReleaseDC(NULL, hdc);
+        return 0;
+    }
+
+    bits = (unsigned char *)GlobalLock(h_dib);
+    if (!bits) {
+        GlobalFree(h_dib);
+        ReleaseDC(NULL, hdc);
+        return 0;
+    }
+
+    ok = GetDIBits(hdc, h_bitmap, 0, (UINT)bmp.bmHeight, bits,
+                   (BITMAPINFO *)&bi, DIB_RGB_COLORS) ? 1 : 0;
+    if (!ok) {
+        GlobalUnlock(h_dib);
+        GlobalFree(h_dib);
+        ReleaseDC(NULL, hdc);
+        return 0;
+    }
+
+    f = fopen(path, "wb");
+    if (!f) {
+        GlobalUnlock(h_dib);
+        GlobalFree(h_dib);
+        ReleaseDC(NULL, hdc);
+        return 0;
+    }
+
+    ZeroMemory(&bmf, sizeof(bmf));
+    bmf.bfType = 0x4D42;
+    bmf.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+    bmf.bfSize = bmf.bfOffBits + image_size;
+
+    fwrite(&bmf, sizeof(bmf), 1, f);
+    fwrite(&bi, sizeof(bi), 1, f);
+    fwrite(bits, image_size, 1, f);
+    fclose(f);
+
+    GlobalUnlock(h_dib);
+    GlobalFree(h_dib);
+    ReleaseDC(NULL, hdc);
+    return 1;
+}
 
 /* ── get_system_info ──────────────────────────────────────────────────────── */
 
@@ -441,6 +537,132 @@ cJSON *tool_read_clipboard(cJSON *params)
     }
 
     CloseClipboard();
+    return result;
+}
+
+/* ── capture_screenshot ───────────────────────────────────────────────────── */
+
+cJSON *tool_capture_screenshot(cJSON *params)
+{
+    cJSON *j_mode = cJSON_GetObjectItemCaseSensitive(params, "mode");
+    cJSON *j_path = cJSON_GetObjectItemCaseSensitive(params, "path");
+    cJSON *j_hwnd = cJSON_GetObjectItemCaseSensitive(params, "hwnd");
+    const char *mode = "desktop";
+    const char *capture_mode = "desktop";
+    char out_path[MAX_PATH_BYTES];
+    cJSON *result;
+    HWND hwnd = NULL;
+    RECT rc;
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+    HDC hdc_screen = NULL;
+    HDC hdc_mem = NULL;
+    HBITMAP h_bitmap = NULL;
+    HGDIOBJ h_old = NULL;
+    int ok = 0;
+
+    ZeroMemory(out_path, sizeof(out_path));
+    ZeroMemory(&rc, sizeof(rc));
+    result = cJSON_CreateObject();
+
+    if (cJSON_IsString(j_mode) && j_mode->valuestring && j_mode->valuestring[0]) {
+        mode = j_mode->valuestring;
+    }
+
+    if (cJSON_IsString(j_path) && j_path->valuestring && j_path->valuestring[0]) {
+        lstrcpynA(out_path, j_path->valuestring, sizeof(out_path));
+    } else {
+        build_default_screenshot_path(out_path, sizeof(out_path));
+    }
+
+    if (lstrcmpiA(mode, "active_window") == 0) {
+        hwnd = GetForegroundWindow();
+        capture_mode = "active_window";
+    } else if (lstrcmpiA(mode, "window") == 0 || cJSON_IsNumber(j_hwnd)) {
+        if (cJSON_IsNumber(j_hwnd)) {
+            hwnd = (HWND)(DWORD)j_hwnd->valuedouble;
+        }
+        capture_mode = "window";
+    }
+
+    if (hwnd) {
+        if (!IsWindow(hwnd)) {
+            cJSON_AddStringToObject(result, "error", "invalid_hwnd");
+            return result;
+        }
+        if (IsIconic(hwnd)) {
+            cJSON_AddStringToObject(result, "error", "window_minimized");
+            return result;
+        }
+        if (!GetWindowRect(hwnd, &rc)) {
+            cJSON_AddStringToObject(result, "error", "GetWindowRect failed");
+            return result;
+        }
+        x = rc.left;
+        y = rc.top;
+        w = rc.right - rc.left;
+        h = rc.bottom - rc.top;
+    } else {
+        x = 0;
+        y = 0;
+        w = GetSystemMetrics(SM_CXSCREEN);
+        h = GetSystemMetrics(SM_CYSCREEN);
+        capture_mode = "desktop";
+    }
+
+    if (w <= 0 || h <= 0) {
+        cJSON_AddStringToObject(result, "error", "invalid_capture_bounds");
+        return result;
+    }
+
+    hdc_screen = GetDC(NULL);
+    if (!hdc_screen) {
+        cJSON_AddStringToObject(result, "error", "GetDC failed");
+        return result;
+    }
+
+    hdc_mem = CreateCompatibleDC(hdc_screen);
+    if (!hdc_mem) {
+        ReleaseDC(NULL, hdc_screen);
+        cJSON_AddStringToObject(result, "error", "CreateCompatibleDC failed");
+        return result;
+    }
+
+    h_bitmap = CreateCompatibleBitmap(hdc_screen, w, h);
+    if (!h_bitmap) {
+        DeleteDC(hdc_mem);
+        ReleaseDC(NULL, hdc_screen);
+        cJSON_AddStringToObject(result, "error", "CreateCompatibleBitmap failed");
+        return result;
+    }
+
+    h_old = SelectObject(hdc_mem, h_bitmap);
+    ok = BitBlt(hdc_mem, 0, 0, w, h, hdc_screen, x, y, SRCCOPY) ? 1 : 0;
+    if (h_old) SelectObject(hdc_mem, h_old);
+
+    if (!ok || !save_bitmap_to_bmp(h_bitmap, out_path)) {
+        DeleteObject(h_bitmap);
+        DeleteDC(hdc_mem);
+        ReleaseDC(NULL, hdc_screen);
+        cJSON_AddStringToObject(result, "error", "capture_failed");
+        return result;
+    }
+
+    DeleteObject(h_bitmap);
+    DeleteDC(hdc_mem);
+    ReleaseDC(NULL, hdc_screen);
+
+    cJSON_AddBoolToObject(result, "success", 1);
+    cJSON_AddStringToObject(result, "path", out_path);
+    cJSON_AddStringToObject(result, "format", "bmp");
+    cJSON_AddStringToObject(result, "mode", capture_mode);
+    cJSON_AddNumberToObject(result, "width", (double)w);
+    cJSON_AddNumberToObject(result, "height", (double)h);
+    if (hwnd) {
+        cJSON_AddNumberToObject(result, "hwnd", (double)(DWORD)hwnd);
+    }
     return result;
 }
 

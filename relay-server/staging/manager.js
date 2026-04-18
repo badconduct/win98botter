@@ -14,6 +14,82 @@ const fs = require("fs");
 const path = require("path");
 
 const CHUNK_SIZE = 32768; // 32KB — matches Win98 server max chunk size
+const CONTEXT_BUDGET_BYTES = 256 * 1024;
+
+const TEXT_EXTENSIONS = new Set([
+  "txt",
+  "ini",
+  "cfg",
+  "log",
+  "bat",
+  "cmd",
+  "inf",
+  "reg",
+  "c",
+  "h",
+  "cpp",
+  "asm",
+  "js",
+  "json",
+  "md",
+  "xml",
+  "html",
+  "htm",
+]);
+
+function getExtension(filePath) {
+  return path
+    .extname(String(filePath || ""))
+    .replace(/^\./, "")
+    .toLowerCase();
+}
+
+function mimeTypeFromPath(filePath) {
+  const ext = getExtension(filePath);
+  switch (ext) {
+    case "txt":
+    case "ini":
+    case "cfg":
+    case "log":
+    case "bat":
+    case "cmd":
+    case "reg":
+    case "c":
+    case "h":
+    case "cpp":
+    case "asm":
+    case "js":
+    case "json":
+    case "md":
+    case "xml":
+    case "html":
+    case "htm":
+      return "text/plain";
+    case "bmp":
+      return "image/bmp";
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "gif":
+      return "image/gif";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function decodeTextBuffer(buffer) {
+  if (!buffer || buffer.length === 0) return "";
+
+  const utf8 = buffer.toString("utf8");
+  const replacementCount = (utf8.match(/\uFFFD/g) || []).length;
+  if (replacementCount > Math.max(3, Math.floor(utf8.length * 0.02))) {
+    return buffer.toString("latin1");
+  }
+
+  return utf8;
+}
 
 // ── Parser registry ───────────────────────────────────────────────────────────
 
@@ -110,7 +186,6 @@ class StagingManager {
     const safeName = win98Path.replace(/[:\\\/]/g, "_").replace(/^_+/, "");
     const stagedPath = path.join(dir, safeName);
 
-    // First get file info
     let info;
     try {
       info = await this.win98.callTool("get_file_info", { path: win98Path });
@@ -118,23 +193,28 @@ class StagingManager {
       return { error: `get_file_info failed: ${err.message}` };
     }
 
+    if (!info || info.error) {
+      return {
+        error: info && info.error ? info.error : "get_file_info failed",
+      };
+    }
+
     if (!info.exists) {
       return { error: `File not found on Win98: ${win98Path}` };
     }
 
-    const totalSize = info.size || 0;
+    const totalSize = Number(info.size_bytes ?? info.size ?? 0);
     this.log.debug(
       { path: win98Path, size: totalSize },
       "Staging file from Win98",
     );
 
-    // Pull in chunks
     let offset = 0;
-    const chunks = [];
+    const buffers = [];
     let truncatedAt = null;
-    const CONTEXT_BUDGET_BYTES = 256 * 1024; // 256KB raw limit per file
+    let reachedEof = false;
 
-    while (offset < totalSize) {
+    while (!reachedEof && (totalSize === 0 || offset < totalSize)) {
       let result;
       try {
         result = await this.win98.callTool("read_file", {
@@ -143,17 +223,38 @@ class StagingManager {
           length: CHUNK_SIZE,
         });
       } catch (err) {
-        this.log.warn({ err, offset }, "Chunk read failed");
+        this.log.warn({ err: err.message, offset }, "Chunk read failed");
         break;
       }
 
-      const chunkContent = result.content || "";
-      chunks.push(chunkContent);
-      offset += result.bytes_read || chunkContent.length || CHUNK_SIZE;
+      if (!result || result.error) {
+        this.log.warn(
+          { offset, error: result && result.error },
+          "Chunk read returned an error payload",
+        );
+        break;
+      }
 
-      if (!result.truncated) break;
+      let chunkBuffer = Buffer.alloc(0);
+      if (typeof result.data_b64 === "string") {
+        chunkBuffer = Buffer.from(result.data_b64, "base64");
+      } else if (typeof result.content === "string") {
+        chunkBuffer = Buffer.from(result.content, "utf8");
+      }
 
-      if (offset >= CONTEXT_BUDGET_BYTES) {
+      if (chunkBuffer.length > 0) {
+        buffers.push(chunkBuffer);
+      }
+
+      const bytesRead = Number(
+        result.bytes_read ?? result.length ?? chunkBuffer.length ?? 0,
+      );
+      if (bytesRead <= 0 && chunkBuffer.length === 0) break;
+
+      offset += bytesRead > 0 ? bytesRead : chunkBuffer.length;
+      reachedEof = result.eof === true || result.eof === 1;
+
+      if (!reachedEof && offset >= CONTEXT_BUDGET_BYTES) {
         truncatedAt = offset;
         this.log.info(
           { path: win98Path, offset },
@@ -163,30 +264,45 @@ class StagingManager {
       }
     }
 
-    const fullContent = chunks.join("");
+    const fullBuffer = Buffer.concat(buffers);
+    fs.writeFileSync(stagedPath, fullBuffer);
 
-    // Write locally for parser
-    fs.writeFileSync(stagedPath, fullContent, "utf8");
+    const mimeType = mimeTypeFromPath(win98Path);
+    const isTextFile = TEXT_EXTENSIONS.has(getExtension(win98Path));
 
-    // Parse
-    const parser = findParser(win98Path);
     let parsed;
-    try {
-      parsed = parser.parse(fullContent);
-    } catch (err) {
-      this.log.warn(
-        { err, path: win98Path },
-        "Parser threw error — returning raw summary",
-      );
-      parsed = { error: err.message, raw_snippet: fullContent.slice(0, 500) };
+    let fullContent = null;
+
+    if (isTextFile) {
+      fullContent = decodeTextBuffer(fullBuffer);
+      const parser = findParser(win98Path);
+      try {
+        parsed = parser.parse(fullContent);
+      } catch (err) {
+        this.log.warn(
+          { err: err.message, path: win98Path },
+          "Parser threw error — returning raw summary",
+        );
+        parsed = { error: err.message, raw_snippet: fullContent.slice(0, 500) };
+      }
+    } else {
+      parsed = {
+        binary: true,
+        mime_type: mimeType,
+        byte_length: fullBuffer.length,
+        note: "Binary file staged locally; raw bytes were omitted from model context.",
+      };
     }
 
     return {
       win98_path: win98Path,
       staged_path: stagedPath,
       file_size: totalSize,
-      staged_bytes: fullContent.length,
+      staged_bytes: fullBuffer.length,
       truncated_at_bytes: truncatedAt,
+      mime_type: mimeType,
+      is_text: isTextFile,
+      content: fullContent,
       parsed,
     };
   }

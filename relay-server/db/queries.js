@@ -191,6 +191,21 @@ function recordFileLocation(agentId, fileName, discPath) {
 }
 
 /**
+ * Look up a cached file location by its full discovered path.
+ */
+function getFileLocationByPath(agentId, discPath) {
+  return getDb()
+    .prepare(
+      `SELECT *
+       FROM file_locations
+       WHERE agent_id = ? AND discovered_path = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+    )
+    .get(agentId, discPath);
+}
+
+/**
  * Update the verification status and timestamp for a file location.
  * Used when the LLM has verified a file still exists (or no longer exists).
  */
@@ -224,6 +239,8 @@ function markFileLocationsNotFound(agentId, fileName) {
  * Store or update file content for a specific line range.
  * Supports partial reads: if lines 1-10 are known and we read lines 50-60,
  * both ranges are stored separately and can be merged for display.
+ * For binary files, content may be a base64 or summary string while MIME/type
+ * metadata lives on the related file_locations row.
  */
 function storeFileContent(
   fileLocationId,
@@ -528,6 +545,7 @@ module.exports = {
   getFileChangeById,
   getKnownFileLocations,
   recordFileLocation,
+  getFileLocationByPath,
   updateFileLocationVerification,
   markFileLocationsNotFound,
   storeFileContent,

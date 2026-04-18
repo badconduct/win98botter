@@ -61,6 +61,7 @@ void permissions_load(const char *ini_path)
     g_perms.scheduler       = read_ini_bool(ini_path, section, "scheduler");
     g_perms.audio           = read_ini_bool(ini_path, section, "audio");
     g_perms.display         = read_ini_bool(ini_path, section, "display");
+    g_perms.screenshot      = read_ini_bool(ini_path, section, "screenshot");
 
     g_perms_loaded = 1;
 }
@@ -172,6 +173,11 @@ int permission_allowed(const char *tool_name)
         return p->display;
     }
 
+    /* Screenshot capture */
+    if (strcmp(tool_name, "capture_screenshot") == 0) {
+        return p->screenshot;
+    }
+
     /* Always-allowed read-only system tools */
     if (strcmp(tool_name, "get_system_info")   == 0 ||
         strcmp(tool_name, "get_disk_info")     == 0 ||
@@ -225,6 +231,7 @@ void permissions_set_from_json(cJSON *obj)
     SET_PERM(scheduler,        "scheduler")
     SET_PERM(audio,            "audio")
     SET_PERM(display,          "display")
+    SET_PERM(screenshot,       "screenshot")
 
 #undef SET_PERM
 }
@@ -254,6 +261,7 @@ cJSON *permissions_to_json(void)
     cJSON_AddBoolToObject(obj, "scheduler",        p->scheduler);
     cJSON_AddBoolToObject(obj, "audio",            p->audio);
     cJSON_AddBoolToObject(obj, "display",          p->display);
+    cJSON_AddBoolToObject(obj, "screenshot",       p->screenshot);
 
     return obj;
 }

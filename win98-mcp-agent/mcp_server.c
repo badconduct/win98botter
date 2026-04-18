@@ -422,6 +422,7 @@ static cJSON *build_tools_list(void)
     TOOL("get_window_list",    "List all visible windows",                     1);
     TOOL("send_window_message","Send a WM_ message to a window",              1);
     TOOL("read_clipboard",     "Read text from the clipboard",                 1);
+    TOOL("capture_screenshot", "Capture a screenshot to a BMP file",           1);
     TOOL("get_comm_port_state","Get COM port DCB state",                       1);
     TOOL("read_serial",        "Read bytes from a COM port",                   1);
     TOOL("write_serial",       "Write bytes to a COM port",                    1);
@@ -553,6 +554,7 @@ ToolEntry g_tools[] = {
     { "get_window_list",       tool_get_window_list    },
     { "send_window_message",   tool_send_window_message},
     { "read_clipboard",        tool_read_clipboard     },
+    { "capture_screenshot",    tool_capture_screenshot },
     { "get_comm_port_state",   tool_get_comm_port_state},
     { "read_serial",           tool_read_serial        },
     { "write_serial",          tool_write_serial       },

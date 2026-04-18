@@ -667,6 +667,29 @@ const TOOL_SCHEMAS = [
       properties: {},
     },
   },
+  {
+    name: "capture_screenshot",
+    description:
+      "Capture a BMP screenshot on the Win98 machine and save it to a temp or specified path. Defaults to the full desktop.",
+    input_schema: {
+      type: "object",
+      properties: {
+        mode: {
+          type: "string",
+          description:
+            'Capture target: "desktop" (default), "active_window", or "window"',
+        },
+        hwnd: {
+          type: "integer",
+          description: "Optional window handle to capture when mode is window",
+        },
+        path: {
+          type: "string",
+          description: "Optional absolute destination path for the BMP file",
+        },
+      },
+    },
+  },
 
   // ── Audio / MIDI Enumeration ────────────────────────────────────────────────
   {

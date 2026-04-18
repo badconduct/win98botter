@@ -80,6 +80,7 @@ export default function SystemPrompt({ agent }) {
     ["hardware_io", "hardware_io"],
     ["serial", "serial"],
     ["scheduler", "scheduler"],
+    ["screenshot", "screenshot"],
     ["system", "system"],
   ];
 
