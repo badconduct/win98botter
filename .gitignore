@@ -1,2 +1,38 @@
-# Local/manual test scripts and artifacts
+# ── Local/manual test artifacts ───────────────────────────────────────────
 test/
+
+# ── Dependencies ────────────────────────────────────────────────────────────
+**/node_modules/
+
+# ── Environment and local config ────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.local
+
+# ── Logs ────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ── Databases and runtime cache ─────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+relay-server/staging_data/
+
+# ── Build outputs / temp files ──────────────────────────────────────────────
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*.zip
+.DS_Store
+Thumbs.db
+
+# ── Win98 agent local build artifacts ───────────────────────────────────────
+win98-mcp-agent/*.exe
+win98-mcp-agent/*.plg
+win98-mcp-agent/agent.log
