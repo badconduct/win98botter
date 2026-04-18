@@ -18,6 +18,18 @@ Do not treat modern toolchain builds (newer MSVC/MinGW) as production-equivalent
 
 ---
 
+## Requirements
+
+Before running or publishing the project, the expected environment is:
+
+- **Node.js 22+** for the relay server
+- **Windows 98 SE** for real target-agent deployment
+- **Visual Studio 6** for the production Win98 agent build
+- **Optional Docker / Docker Compose** for running the relay and PostgreSQL stack together
+- **Optional PostgreSQL** only if you want the Phase 1 map cache enabled
+
+---
+
 ## 🚀 Current Capabilities
 
 Win98Botter is designed as a **modern control and assistance layer for real Windows 98 machines**. Instead of treating each old PC as an isolated box, this project gives you a central relay, a browser dashboard, an AI operator, and an auditable tool pipeline that can inspect, troubleshoot, and act on one or more connected systems.
@@ -103,7 +115,80 @@ In practice, SQLite is the project’s day-to-day audit trail, while PostgreSQL 
 
 ---
 
-## Repository Layout
+## ⚡ Quick Start
+
+1. Start the relay server using either Docker Compose or local Node.js.
+2. Open the Setup or Settings screen and configure the model endpoint, relay ports, and optional PostgreSQL cache.
+3. Build `win98-mcp-agent` version **0.9** using **Visual Studio 6 on Windows 98 SE**.
+4. Start the agent in foreground, service mode, or local CLI mode depending on your workflow.
+5. If you want visual capture, enable `screenshot=1` in the agent permissions file and restart the agent.
+6. If you enable the PostgreSQL Phase 1 cache, confirm the DB connection values in Settings and restart the relay if needed.
+7. Connect through the web dashboard or the VB6 client.
+
+### Relay startup options
+
+**Docker Compose**
+
+```bash
+cd relay-server
+docker compose up -d --build
+```
+
+**Local Node.js**
+
+```bash
+cd relay-server
+npm install
+npm start
+```
+
+For live development, you can also run:
+
+```bash
+npm run dev
+```
+
+### Agent startup flags
+
+| Flag                      | Effect                                                                   |
+| ------------------------- | ------------------------------------------------------------------------ |
+| _(none)_                  | Normal foreground mode                                                   |
+| `-version`                | Print `Win98MCPAgent 0.9` and exit                                       |
+| `-service`                | Run as a hidden background Win9x service                                 |
+| `-install`                | Register the agent for automatic startup and exit                        |
+| `-stop`                   | Stop a running local agent instance and exit                             |
+| `-uninstall`              | Remove the startup registration and stop the running instance if present |
+| `-cli <method> [args...]` | Send a local IPC command to the running agent executable and exit        |
+
+### Local command usage via the agent EXE
+
+Once the Win98 agent is running, you can also use the executable itself for local one-shot operations through IPC. This is useful for quick testing, diagnostics, or running commands directly on the machine without going through the web UI.
+
+Examples:
+
+```bat
+mcp_server.exe -cli tools/list
+mcp_server.exe -cli run-command "dir C:\"
+mcp_server.exe -cli read-file "C:\WINDOWS\WIN.INI"
+mcp_server.exe -cli write-file "C:\TEMP\note.txt" "hello from cli"
+```
+
+If using Docker Compose, ensure the PostgreSQL environment values match the relay configuration.
+
+---
+
+## 🏗️ Current Architecture
+
+1. The Win98 or VB6 side sends requests and agent context.
+2. The relay receives requests, builds orchestration context, and brokers tool execution.
+3. The Win98 agent executes primitive actions and returns structured results.
+4. The relay stores conversational and operational history in SQLite.
+5. The relay stores cached file metadata and screenshot captures in SQLite.
+6. The optional PostgreSQL Phase 1 store keeps structured environment-map data.
+
+---
+
+## 📁 Repository Layout
 
 ```
 win98botter/
@@ -119,64 +204,16 @@ win98botter/
 
 ---
 
-## Current Architecture
-
-1. Win98/VB6 side sends requests and agent context.
-2. Relay receives requests, builds orchestration context, and brokers tool execution.
-3. Win98 agent executes primitive actions and returns structured results.
-4. Relay stores conversational and operational history in SQLite.
-5. Relay stores cached file metadata and screenshot captures in SQLite.
-6. Relay stores Phase 1 environment map captures in PostgreSQL.
-
----
-
-## Notable Recent Changes
+## ✅ Recent Improvements
 
 1. Updated the assistant identity prompt so the relay persona is clearly distinct from the physical Win98 machine.
 2. Added the `capture_screenshot` tool to the relay and Win98 agent.
 3. Added a screenshot permission toggle to the web UI.
 4. Added screenshot-awareness to the system prompt so the assistant can explain when visual capture is unavailable.
 5. Fixed relay staging logic to correctly read Win98 file payloads and binary content.
-6. Added SQLite caching for captured screenshots and their metadata.
-7. Bumped the Win98 agent version to **0.9**.
-8. Retained the previously completed settings, logging, service mode, and Phase 1 cache improvements.
-
----
-
-## Sprint Recap (Current State)
-
-1. File location caching is now persisted in relay SQLite and reused in later prompts.
-2. Agent prompt guidance was expanded for Win98 path fallback behavior (for files like `WIN.INI`).
-3. Relay now stores discovered directory structure and serves it via file-activity API routes.
-4. Website File Activity panel now includes an expandable directory map (`+` / `-`) with directories first and files below.
-5. Website map supports cached-file highlighting and inline file preview (when DB content exists).
-6. LLM URL normalization was hardened to avoid malformed endpoint issues.
-7. Chat failure handling was tightened to reduce silent/non-informative failures.
-8. The experimental `vscode-extension/` workspace module was removed; the web dashboard is now the primary UI path.
-
----
-
-## Quick Start (Current Dev Flow)
-
-1. Start the relay stack from `relay-server`.
-2. Configure the model endpoint, relay settings, and optional PostgreSQL cache in the Setup or Settings screens.
-3. Build `win98-mcp-agent` version **0.9** using **Visual Studio 6 on Windows 98 SE**, then start the agent in the desired mode.
-4. If you want visual capture, enable `screenshot=1` in the agent permissions file and restart the agent.
-5. If you enable the PostgreSQL Phase 1 cache, confirm the DB connection values in Settings and restart the relay if needed.
-6. Connect through the web dashboard or the VB6 client.
-
-**Agent startup flags:**
-
-| Flag                   | Effect                                               |
-| ---------------------- | ---------------------------------------------------- |
-| _(none)_               | Normal foreground mode                               |
-| `-version`             | Print `Win98MCPAgent 0.9` and exit                   |
-| `-service`             | Run as background Win9x service (hidden, auto-start) |
-| `-install`             | Write autorun registry key and exit                  |
-| `-uninstall`           | Remove autorun registry key and exit                 |
-| `-cli <method> [args]` | Send one command via IPC pipe and exit               |
-
-If using Docker Compose, ensure Postgres environment values match the relay configuration.
+6. Added SQLite caching for captured screenshots, file locations, and directory activity.
+7. Exposed the optional PostgreSQL Phase 1 cache in the Settings UI.
+8. Bumped the Win98 agent version to **0.9**.
 
 ---
 
