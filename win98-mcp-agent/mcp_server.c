@@ -283,6 +283,52 @@ static void send_notification(SOCKET sock, const char *method, cJSON *params)
     cJSON_Delete(msg);
 }
 
+static BOOL detect_optional_grep_path(char *grep_path, size_t grep_path_size)
+{
+    const char *candidates[7];
+    DWORD n;
+    DWORD attr;
+    int i;
+
+    if (!grep_path || grep_path_size == 0) return FALSE;
+
+    grep_path[0] = '\0';
+    candidates[0] = "C:\\Program Files\\GnuWin32\\bin\\grep.exe";
+    candidates[1] = "C:\\PROGRA~1\\GnuWin32\\bin\\grep.exe";
+    candidates[2] = "C:\\GnuWin32\\bin\\grep.exe";
+    candidates[3] = "C:\\WIN98BOTTER\\bin\\grep.exe";
+    candidates[4] = "C:\\WINDOWS\\COMMAND\\grep.exe";
+    candidates[5] = "C:\\WINDOWS\\grep.exe";
+    candidates[6] = NULL;
+
+    n = SearchPathA(NULL, "grep.exe", NULL, (DWORD)grep_path_size, grep_path, NULL);
+    if (n > 0 && n < grep_path_size) {
+        return TRUE;
+    }
+
+    for (i = 0; candidates[i] != NULL; i++) {
+        attr = GetFileAttributesA(candidates[i]);
+        if (attr != INVALID_FILE_ATTRIBUTES &&
+            !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            _snprintf(grep_path, grep_path_size, "%s", candidates[i]);
+            grep_path[grep_path_size - 1] = '\0';
+            return TRUE;
+        }
+    }
+
+    grep_path[0] = '\0';
+    return FALSE;
+}
+
+static void add_optional_grep_status(cJSON *result)
+{
+    char grep_path[MAX_PATH_BYTES];
+    BOOL found = detect_optional_grep_path(grep_path, sizeof(grep_path));
+
+    cJSON_AddBoolToObject(result, "grep_installed", found ? 1 : 0);
+    cJSON_AddStringToObject(result, "grep_path", found ? grep_path : "");
+}
+
 /* ── Startup self-check ───────────────────────────────────────────────────── */
 
 static cJSON *do_startup_check(void)
@@ -349,6 +395,9 @@ static cJSON *do_startup_check(void)
         cJSON_AddStringToObject(result, "permissions_ini", PERMISSIONS_INI);
     }
 
+    /* Optional external grep.exe */
+    add_optional_grep_status(result);
+
     return result;
 }
 
@@ -387,6 +436,7 @@ static cJSON *build_tools_list(void)
     TOOL("move_file",          "Move or rename a file",                        1);
     TOOL("get_file_info",      "Get file metadata",                            1);
     TOOL("list_directory",     "List directory contents",                      1);
+    TOOL("find_files",         "Recursively search for files by name or wildcard", 1);
     TOOL("grep_file",          "Search file for substring",                    1);
     TOOL("get_history",        "Get recent operation history",                 1);
     TOOL("file_exists",        "Check if file exists",                         1);
@@ -426,7 +476,7 @@ static cJSON *build_tools_list(void)
     TOOL("get_comm_port_state","Get COM port DCB state",                       1);
     TOOL("read_serial",        "Read bytes from a COM port",                   1);
     TOOL("write_serial",       "Write bytes to a COM port",                    1);
-    TOOL("get_audio_devices",  "List waveIn audio devices",                    1);
+    TOOL("get_audio_devices",  "List installed audio input and output devices", 1);
     TOOL("get_midi_devices",   "List MIDI input devices",                      1);
 
 #undef TOOL
@@ -519,6 +569,7 @@ ToolEntry g_tools[] = {
     { "move_file",             tool_move_file          },
     { "get_file_info",         tool_get_file_info      },
     { "list_directory",        tool_list_directory     },
+    { "find_files",            tool_find_files         },
     { "grep_file",             tool_grep_file          },
     { "get_history",           tool_get_history        },
     { "file_exists",           fn_file_exists          },
@@ -1026,6 +1077,15 @@ int main(int argc, char *argv[])
     /* Load permissions */
     permissions_load(PERMISSIONS_INI);
     agent_logf("INFO", "Permissions loaded from %s", PERMISSIONS_INI);
+
+    {
+        char grep_path[MAX_PATH_BYTES];
+        if (detect_optional_grep_path(grep_path, sizeof(grep_path))) {
+            agent_logf("INFO", "External grep detected at %s", grep_path);
+        } else {
+            agent_logf("WARN", "External grep not found. Using built-in search tools.");
+        }
+    }
 
     /* Start IPC (named pipe) server for local CLI/VB6 commands in all modes. */
     hIPCServer = ipc_server_start();

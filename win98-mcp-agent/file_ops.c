@@ -3,7 +3,7 @@
  *
  * Implements: read_file, write_file, write_file_binary, append_file,
  *             delete_file, copy_file, move_file, get_file_info,
- *             list_directory, grep_file, list_backups, restore_backup,
+ *             list_directory, find_files, grep_file, list_backups, restore_backup,
  *             get_history, file_exists
  *
  * Every destructive operation automatically backs up the original first.
@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include "config.h"
 #include "file_ops.h"
 #include "cJSON.h"
@@ -41,6 +42,24 @@ static void normalise_path(char *p)
         if (*p == '/') *p = '\\';
         p++;
     }
+}
+
+/* Join base path and child/pattern without producing duplicate slashes. */
+static void join_path(char *out, size_t out_size, const char *base, const char *tail)
+{
+    size_t len;
+
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!base || !tail) return;
+
+    len = strlen(base);
+    if (len > 0 && (base[len - 1] == '\\' || base[len - 1] == '/')) {
+        _snprintf(out, out_size, "%s%s", base, tail);
+    } else {
+        _snprintf(out, out_size, "%s\\%s", base, tail);
+    }
+    out[out_size - 1] = '\0';
 }
 
 /* Build timestamp string YYYYMMDD_HHMMSS */
@@ -172,6 +191,94 @@ static void history_append(const char *action, const char *path, const char *ext
             st.wHour, st.wMinute, st.wSecond,
             action, path, extra ? extra : "");
     fclose(f);
+}
+
+typedef struct {
+    cJSON *entries;
+    int max_results;
+    int count;
+    int recursive;
+    int include_dirs;
+} SearchCtx;
+
+static void add_search_entry(SearchCtx *ctx, const char *base_path, const WIN32_FIND_DATAA *ffd)
+{
+    char full_path[MAX_PATH_BYTES + 8];
+    cJSON *entry;
+    LARGE_INTEGER sz;
+    SYSTEMTIME st;
+    char date_buf[32];
+    int is_dir;
+
+    if (!ctx || !base_path || !ffd) return;
+    if (ctx->count >= ctx->max_results) return;
+
+    is_dir = (ffd->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+    if (is_dir && !ctx->include_dirs) return;
+
+    join_path(full_path, sizeof(full_path), base_path, ffd->cFileName);
+
+    entry = cJSON_CreateObject();
+    cJSON_AddStringToObject(entry, "name", ffd->cFileName);
+    cJSON_AddStringToObject(entry, "path", full_path);
+    cJSON_AddStringToObject(entry, "type", is_dir ? "dir" : "file");
+
+    sz.LowPart  = ffd->nFileSizeLow;
+    sz.HighPart = (LONG)ffd->nFileSizeHigh;
+    cJSON_AddNumberToObject(entry, "size", (double)sz.QuadPart);
+
+    FileTimeToSystemTime(&ffd->ftLastWriteTime, &st);
+    _snprintf(date_buf, sizeof(date_buf), "%04d-%02d-%02d %02d:%02d:%02d",
+              st.wYear, st.wMonth, st.wDay,
+              st.wHour, st.wMinute, st.wSecond);
+    date_buf[sizeof(date_buf) - 1] = '\0';
+    cJSON_AddStringToObject(entry, "modified", date_buf);
+
+    cJSON_AddItemToArray(ctx->entries, entry);
+    ctx->count++;
+}
+
+static void collect_matches_recursive(const char *base_path, const char *pattern, SearchCtx *ctx)
+{
+    char search_path[MAX_PATH_BYTES + 8];
+    char child_path[MAX_PATH_BYTES + 8];
+    WIN32_FIND_DATAA ffd;
+    HANDLE hFind;
+
+    if (!base_path || !pattern || !ctx) return;
+    if (ctx->count >= ctx->max_results) return;
+
+    join_path(search_path, sizeof(search_path), base_path, pattern);
+
+    hFind = FindFirstFileA(search_path, &ffd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (strcmp(ffd.cFileName, ".") == 0 || strcmp(ffd.cFileName, "..") == 0)
+                continue;
+            add_search_entry(ctx, base_path, &ffd);
+            if (ctx->count >= ctx->max_results) break;
+        } while (FindNextFileA(hFind, &ffd));
+        FindClose(hFind);
+    }
+
+    if (!ctx->recursive || ctx->count >= ctx->max_results) return;
+
+    join_path(search_path, sizeof(search_path), base_path, "*.*");
+
+    hFind = FindFirstFileA(search_path, &ffd);
+    if (hFind == INVALID_HANDLE_VALUE) return;
+
+    do {
+        if (!(ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        if (strcmp(ffd.cFileName, ".") == 0 || strcmp(ffd.cFileName, "..") == 0)
+            continue;
+
+        join_path(child_path, sizeof(child_path), base_path, ffd.cFileName);
+        collect_matches_recursive(child_path, pattern, ctx);
+        if (ctx->count >= ctx->max_results) break;
+    } while (FindNextFileA(hFind, &ffd));
+
+    FindClose(hFind);
 }
 
 /* ── Base64 decoder (RFC 4648, no line wrapping) ──────────────────────────── */
@@ -772,19 +879,18 @@ cJSON *tool_list_directory(cJSON *params)
 {
     cJSON *j_path, *j_pattern, *j_recursive;
     const char *path_raw;
+    const char *pattern;
     char path[MAX_PATH_BYTES];
-    char search_path[MAX_PATH_BYTES + 8];
-    WIN32_FIND_DATAA ffd;
-    HANDLE hFind;
-    SYSTEMTIME st;
-    char date_buf[32];
-    cJSON *result, *entries, *entry;
-    LARGE_INTEGER sz;
+    int recursive = 0;
+    DWORD attr;
+    int path_exists;
+    int is_directory_path;
+    SearchCtx ctx;
+    cJSON *result;
 
     j_path      = cJSON_GetObjectItemCaseSensitive(params, "path");
     j_pattern   = cJSON_GetObjectItemCaseSensitive(params, "pattern");
     j_recursive = cJSON_GetObjectItemCaseSensitive(params, "recursive");
-    (void)j_recursive; /* recursive listing not yet implemented */
 
     if (!cJSON_IsString(j_path)) {
         result = cJSON_CreateObject();
@@ -801,43 +907,108 @@ cJSON *tool_list_directory(cJSON *params)
     strcpy(path, path_raw);
     normalise_path(path);
 
-    /* Build search glob */
-    {
-        const char *pattern = (cJSON_IsString(j_pattern)) ? j_pattern->valuestring : "*.*";
-        _snprintf(search_path, sizeof(search_path), "%s\\%s", path, pattern);
-    }
+    pattern = (cJSON_IsString(j_pattern)) ? j_pattern->valuestring : "*.*";
+    recursive = (j_recursive && ((cJSON_IsBool(j_recursive) && cJSON_IsTrue(j_recursive)) ||
+                 (cJSON_IsNumber(j_recursive) && j_recursive->valuedouble != 0))) ? 1 : 0;
 
-    entries = cJSON_CreateArray();
-    hFind = FindFirstFileA(search_path, &ffd);
-    if (hFind != INVALID_HANDLE_VALUE) {
-        do {
-            if (strcmp(ffd.cFileName, ".") == 0 || strcmp(ffd.cFileName, "..") == 0)
-                continue;
+    attr = GetFileAttributesA(path);
+    path_exists = (attr != INVALID_FILE_ATTRIBUTES) ? 1 : 0;
+    is_directory_path = (path_exists && (attr & FILE_ATTRIBUTE_DIRECTORY)) ? 1 : 0;
 
-            entry = cJSON_CreateObject();
-            cJSON_AddStringToObject(entry, "name", ffd.cFileName);
-            cJSON_AddStringToObject(entry, "type",
-                (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? "dir" : "file");
+    ctx.entries = cJSON_CreateArray();
+    ctx.max_results = recursive ? 1000 : 250;
+    ctx.count = 0;
+    ctx.recursive = recursive;
+    ctx.include_dirs = 1;
 
-            sz.LowPart  = ffd.nFileSizeLow;
-            sz.HighPart = (LONG)ffd.nFileSizeHigh;
-            cJSON_AddNumberToObject(entry, "size", (double)sz.QuadPart);
-
-            FileTimeToSystemTime(&ffd.ftLastWriteTime, &st);
-            _snprintf(date_buf, sizeof(date_buf), "%04d-%02d-%02d %02d:%02d:%02d",
-                      st.wYear, st.wMonth, st.wDay,
-                      st.wHour, st.wMinute, st.wSecond);
-            cJSON_AddStringToObject(entry, "modified", date_buf);
-
-            cJSON_AddItemToArray(entries, entry);
-        } while (FindNextFileA(hFind, &ffd));
-        FindClose(hFind);
-    }
+    collect_matches_recursive(path, pattern, &ctx);
 
     result = cJSON_CreateObject();
     cJSON_AddStringToObject(result, "path", path);
-    cJSON_AddItemToObject(result, "entries", entries);
-    cJSON_AddNumberToObject(result, "count", (double)cJSON_GetArraySize(entries));
+    cJSON_AddStringToObject(result, "pattern", pattern);
+    cJSON_AddBoolToObject(result, "recursive", recursive);
+    cJSON_AddBoolToObject(result, "path_exists", path_exists);
+    cJSON_AddBoolToObject(result, "is_directory", is_directory_path);
+    cJSON_AddItemToObject(result, "entries", ctx.entries);
+    cJSON_AddNumberToObject(result, "count", (double)ctx.count);
+    cJSON_AddBoolToObject(result, "truncated", (ctx.count >= ctx.max_results) ? 1 : 0);
+    return result;
+}
+
+cJSON *tool_find_files(cJSON *params)
+{
+    cJSON *j_path, *j_pattern, *j_recursive, *j_max, *j_dirs;
+    const char *path_raw;
+    const char *pattern;
+    char path[MAX_PATH_BYTES];
+    int recursive = 1;
+    int max_results = 100;
+    int include_dirs = 0;
+    DWORD attr;
+    int path_exists;
+    int is_directory_path;
+    SearchCtx ctx;
+    cJSON *result;
+
+    j_path      = cJSON_GetObjectItemCaseSensitive(params, "path");
+    j_pattern   = cJSON_GetObjectItemCaseSensitive(params, "pattern");
+    j_recursive = cJSON_GetObjectItemCaseSensitive(params, "recursive");
+    j_max       = cJSON_GetObjectItemCaseSensitive(params, "max_results");
+    j_dirs      = cJSON_GetObjectItemCaseSensitive(params, "include_dirs");
+
+    if (!cJSON_IsString(j_path) || !cJSON_IsString(j_pattern)) {
+        result = cJSON_CreateObject();
+        cJSON_AddStringToObject(result, "error", "path and pattern required");
+        return result;
+    }
+
+    path_raw = j_path->valuestring;
+    pattern = j_pattern->valuestring;
+
+    if (strlen(path_raw) >= MAX_PATH_BYTES - 4) {
+        result = cJSON_CreateObject();
+        cJSON_AddStringToObject(result, "error", "path too long");
+        return result;
+    }
+    strcpy(path, path_raw);
+    normalise_path(path);
+
+    if (j_recursive && ((cJSON_IsBool(j_recursive) && !cJSON_IsTrue(j_recursive)) ||
+        (cJSON_IsNumber(j_recursive) && j_recursive->valuedouble == 0))) {
+        recursive = 0;
+    }
+    if (cJSON_IsNumber(j_max)) {
+        max_results = (int)j_max->valuedouble;
+        if (max_results < 1) max_results = 1;
+        if (max_results > 1000) max_results = 1000;
+    }
+    if (j_dirs && ((cJSON_IsBool(j_dirs) && cJSON_IsTrue(j_dirs)) ||
+        (cJSON_IsNumber(j_dirs) && j_dirs->valuedouble != 0))) {
+        include_dirs = 1;
+    }
+
+    attr = GetFileAttributesA(path);
+    path_exists = (attr != INVALID_FILE_ATTRIBUTES) ? 1 : 0;
+    is_directory_path = (path_exists && (attr & FILE_ATTRIBUTE_DIRECTORY)) ? 1 : 0;
+
+    ctx.entries = cJSON_CreateArray();
+    ctx.max_results = max_results;
+    ctx.count = 0;
+    ctx.recursive = recursive;
+    ctx.include_dirs = include_dirs;
+
+    collect_matches_recursive(path, pattern, &ctx);
+
+    result = cJSON_CreateObject();
+    cJSON_AddStringToObject(result, "path", path);
+    cJSON_AddStringToObject(result, "pattern", pattern);
+    cJSON_AddBoolToObject(result, "recursive", recursive);
+    cJSON_AddBoolToObject(result, "include_dirs", include_dirs);
+    cJSON_AddBoolToObject(result, "path_exists", path_exists);
+    cJSON_AddBoolToObject(result, "is_directory", is_directory_path);
+    cJSON_AddItemToObject(result, "entries", ctx.entries);
+    cJSON_AddNumberToObject(result, "count", (double)ctx.count);
+    cJSON_AddBoolToObject(result, "truncated", (ctx.count >= ctx.max_results) ? 1 : 0);
     return result;
 }
 

@@ -362,44 +362,236 @@ function updateFileMetadata(
 
 // ── Directory Tree Building ───────────────────────────────────────────────────
 
+function normalizeWindowsPathValue(winPath) {
+  let normalized = String(winPath || "")
+    .trim()
+    .replace(/\//g, "\\")
+    .replace(/\\+/g, "\\");
+
+  if (!normalized) return "";
+  if (/^[A-Za-z]:\\?$/.test(normalized)) {
+    return normalized.charAt(0).toUpperCase() + ":";
+  }
+
+  normalized = normalized.replace(/\\+$/, "");
+  if (/^[A-Za-z]:/.test(normalized)) {
+    normalized = normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
+  return normalized;
+}
+
+function canonicalWindowsPathKey(winPath) {
+  return normalizeWindowsPathValue(winPath).toLowerCase();
+}
+
 /**
  * Record a discovered file or directory in the tree.
  * Automatically extracts parent path from the full path.
  */
-function recordDirectoryTreeEntry(agentId, fullPath, isDirectory) {
-  // Use Windows-style path parsing regardless of host OS.
-  const normalized = String(fullPath || "").replace(/\//g, "\\");
-  const parts = normalized.split("\\").filter(Boolean);
+function recordDirectoryTreeEntry(
+  agentId,
+  fullPath,
+  isDirectory,
+  options = {},
+) {
+  const normalized = normalizeWindowsPathValue(fullPath);
+  let existing;
 
+  if (!normalized) return;
+
+  const parts = normalized.split("\\").filter(Boolean);
   if (parts.length === 0) return;
 
   const fileName = parts[parts.length - 1];
   const drive = parts[0].endsWith(":") ? parts[0] : "C:";
   const parentParts = parts.slice(0, -1);
   const parentPath = parentParts.length > 0 ? parentParts.join("\\") : drive;
+  const verifiedAt = String(options.verifiedAt || now());
+  const existsFlag = options.exists === false ? 0 : 1;
+  const hasType = typeof isDirectory === "boolean";
+  const typeValue = hasType && isDirectory ? 1 : 0;
+
+  existing = getDb()
+    .prepare(
+      `SELECT id, path
+       FROM directory_tree
+       WHERE agent_id = ? AND lower(path) = lower(?)
+       LIMIT 1`,
+    )
+    .get(agentId, normalized);
+
+  if (existing) {
+    getDb()
+      .prepare(
+        `UPDATE directory_tree
+         SET path = ?,
+             file_name = ?,
+             is_directory = CASE WHEN ? = 1 THEN ? ELSE is_directory END,
+             parent_path = ?,
+             discovered_at = COALESCE(discovered_at, ?),
+             exists_flag = ?,
+             last_verified = ?
+         WHERE id = ?`,
+      )
+      .run(
+        normalized,
+        fileName,
+        hasType ? 1 : 0,
+        typeValue,
+        parentPath,
+        verifiedAt,
+        existsFlag,
+        verifiedAt,
+        existing.id,
+      );
+    return;
+  }
 
   getDb()
     .prepare(
       `INSERT INTO directory_tree 
-       (agent_id, path, file_name, is_directory, parent_path, discovered_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(agent_id, path) DO NOTHING`,
+       (agent_id, path, file_name, is_directory, parent_path, discovered_at, exists_flag, last_verified)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(agentId, normalized, fileName, isDirectory ? 1 : 0, parentPath, now());
+    .run(
+      agentId,
+      normalized,
+      fileName,
+      typeValue,
+      parentPath,
+      verifiedAt,
+      existsFlag,
+      verifiedAt,
+    );
+}
+
+function updateDirectoryTreeVerification(
+  agentId,
+  fullPath,
+  exists,
+  isDirectory,
+) {
+  const normalized = normalizeWindowsPathValue(fullPath);
+  const verifiedAt = now();
+  const hasType = typeof isDirectory === "boolean";
+  const typeValue = hasType && isDirectory ? 1 : 0;
+
+  if (!normalized) return false;
+
+  const existing = getDb()
+    .prepare(
+      `SELECT id
+       FROM directory_tree
+       WHERE agent_id = ? AND lower(path) = lower(?)
+       LIMIT 1`,
+    )
+    .get(agentId, normalized);
+
+  if (!existing) {
+    if (exists) {
+      recordDirectoryTreeEntry(agentId, normalized, isDirectory, {
+        exists: true,
+        verifiedAt,
+      });
+      return true;
+    }
+    return false;
+  }
+
+  getDb()
+    .prepare(
+      `UPDATE directory_tree
+       SET exists_flag = ?,
+           last_verified = ?,
+           is_directory = CASE WHEN ? = 1 THEN ? ELSE is_directory END
+       WHERE id = ?`,
+    )
+    .run(exists ? 1 : 0, verifiedAt, hasType ? 1 : 0, typeValue, existing.id);
+
+  return true;
+}
+
+function reconcileDirectoryListing(agentId, dirPath, entries, options = {}) {
+  const normalizedDirPath = normalizeWindowsPathValue(dirPath);
+  const authoritative = options.authoritative === true;
+  const verifiedDirExists = options.verifiedDirExists === true;
+  const present = new Set();
+
+  if (!agentId || !normalizedDirPath) return;
+
+  if (verifiedDirExists) {
+    recordDirectoryTreeEntry(agentId, normalizedDirPath, true, {
+      exists: true,
+    });
+  }
+
+  for (const entry of entries || []) {
+    const entryName = String(entry.path || entry.name || "");
+    if (!entryName) continue;
+
+    const fullPath = /^[A-Za-z]:\\/.test(entryName)
+      ? entryName
+      : normalizedDirPath.endsWith("\\")
+        ? normalizedDirPath + entryName
+        : normalizedDirPath + "\\" + entryName;
+
+    const typeStr = String(entry.type || "").toUpperCase();
+    const isDirectory =
+      typeStr === "DIR" ||
+      typeStr === "DIRECTORY" ||
+      typeStr === "<DIR>" ||
+      entry.is_dir === true;
+
+    recordDirectoryTreeEntry(agentId, fullPath, isDirectory, { exists: true });
+    if (!isDirectory) {
+      const fileName = String(entry.name || "").trim();
+      if (fileName) {
+        recordFileLocation(agentId, fileName, fullPath);
+        updateFileLocationVerification(agentId, fileName, fullPath, true);
+      }
+    }
+    present.add(canonicalWindowsPathKey(fullPath));
+  }
+
+  if (authoritative && verifiedDirExists) {
+    const knownChildren = getDb()
+      .prepare(
+        `SELECT path
+         FROM directory_tree
+         WHERE agent_id = ? AND lower(parent_path) = lower(?)`,
+      )
+      .all(agentId, normalizedDirPath);
+
+    for (const child of knownChildren) {
+      if (!present.has(canonicalWindowsPathKey(child.path))) {
+        updateDirectoryTreeVerification(agentId, child.path, false);
+        const cachedFile = getFileLocationByPath(agentId, child.path);
+        if (cachedFile) {
+          updateFileLocationVerification(
+            agentId,
+            cachedFile.file_name,
+            child.path,
+            false,
+          );
+        }
+      }
+    }
+  }
 }
 
 /**
  * Get all entries in a directory (one level deep).
  */
 function getDirectoryContents(agentId, dirPath) {
+  const normalizedDirPath = normalizeWindowsPathValue(dirPath);
   return getDb()
     .prepare(
-      `SELECT path, file_name, is_directory, discovered_at
+      `SELECT path, file_name, is_directory, discovered_at, exists_flag, last_verified
        FROM directory_tree
-       WHERE agent_id = ? AND parent_path = ?
+       WHERE agent_id = ? AND lower(parent_path) = lower(?)
        ORDER BY is_directory DESC, file_name ASC`,
     )
-    .all(agentId, dirPath);
+    .all(agentId, normalizedDirPath);
 }
 
 /**
@@ -409,7 +601,7 @@ function getDirectoryContents(agentId, dirPath) {
 function getDirectoryTreeAsJson(agentId) {
   const entries = getDb()
     .prepare(
-      `SELECT path, file_name, is_directory, parent_path
+      `SELECT path, file_name, is_directory, parent_path, exists_flag, last_verified
        FROM directory_tree
        WHERE agent_id = ?
        ORDER BY path ASC`,
@@ -418,9 +610,9 @@ function getDirectoryTreeAsJson(agentId) {
 
   const fileLocations = getDb()
     .prepare(
-      `SELECT id, discovered_path
+      `SELECT id, discovered_path, exists_flag
        FROM file_locations
-       WHERE agent_id = ? AND exists_flag = 1
+       WHERE agent_id = ?
        ORDER BY id DESC`,
     )
     .all(agentId);
@@ -437,11 +629,13 @@ function getDirectoryTreeAsJson(agentId) {
 
   const fileMetaByPath = new Map();
   for (const fl of fileLocations) {
-    const p = String(fl.discovered_path || "").replace(/\//g, "\\");
-    if (!fileMetaByPath.has(p)) {
-      fileMetaByPath.set(p, {
+    const p = normalizeWindowsPathValue(fl.discovered_path || "");
+    const key = canonicalWindowsPathKey(p);
+    if (p && !fileMetaByPath.has(key)) {
+      fileMetaByPath.set(key, {
         file_location_id: fl.id,
         has_cached_content: fileContentLocationIds.has(fl.id),
+        exists: fl.exists_flag !== 0,
       });
     }
   }
@@ -452,16 +646,17 @@ function getDirectoryTreeAsJson(agentId) {
     type: "directory",
     children: [],
     path: "C:",
+    exists: true,
   };
   const map = new Map();
-  map.set("C:", root);
+  map.set(canonicalWindowsPathKey("C:"), root);
 
   function normalizePath(winPath) {
-    return String(winPath || "").replace(/\//g, "\\");
+    return normalizeWindowsPathValue(winPath);
   }
 
   function computeParent(winPath) {
-    const normalized = String(winPath || "").replace(/\//g, "\\");
+    const normalized = normalizePath(winPath);
     const parts = normalized.split("\\").filter(Boolean);
     if (parts.length <= 1) return "C:";
     return parts.slice(0, -1).join("\\");
@@ -473,16 +668,20 @@ function getDirectoryTreeAsJson(agentId) {
   }
 
   function addChild(parent, child) {
+    const childKey = canonicalWindowsPathKey(child.path);
     if (!parent.children) parent.children = [];
-    if (!parent.children.some((c) => c.path === child.path)) {
+    if (
+      !parent.children.some((c) => canonicalWindowsPathKey(c.path) === childKey)
+    ) {
       parent.children.push(child);
     }
   }
 
   function ensureDirectoryNode(dirPath) {
     const normalizedDir = normalizePath(dirPath);
-    if (map.has(normalizedDir)) return map.get(normalizedDir);
-    if (normalizedDir === "C:") return root;
+    const dirKey = canonicalWindowsPathKey(normalizedDir);
+    if (map.has(dirKey)) return map.get(dirKey);
+    if (dirKey === canonicalWindowsPathKey("C:")) return root;
 
     const parentPath = computeParent(normalizedDir);
     const parent = ensureDirectoryNode(parentPath);
@@ -493,33 +692,56 @@ function getDirectoryTreeAsJson(agentId) {
       path: normalizedDir,
       children: [],
       synthetic: true,
+      exists: true,
     };
-    map.set(normalizedDir, dirNode);
+    map.set(dirKey, dirNode);
     addChild(parent, dirNode);
     return dirNode;
   }
 
   for (const entry of entries) {
     const normalizedPath = normalizePath(entry.path || "");
+    const pathKey = canonicalWindowsPathKey(normalizedPath);
     const parentPath = computeParent(normalizedPath);
 
     if (entry.is_directory) {
       const dirNode = ensureDirectoryNode(normalizedPath);
       dirNode.synthetic = false;
       dirNode.name = nodeNameFromPath(normalizedPath);
+      dirNode.path = normalizedPath;
+      dirNode.exists = entry.exists_flag !== 0;
+      dirNode.last_verified = entry.last_verified || null;
       continue;
     }
 
     const parent = ensureDirectoryNode(parentPath);
-    const meta = fileMetaByPath.get(normalizedPath) || null;
+    const meta = fileMetaByPath.get(pathKey) || null;
+    const existingNode = map.get(pathKey);
+    if (existingNode && existingNode.type === "file") {
+      existingNode.name = nodeNameFromPath(normalizedPath);
+      existingNode.path = normalizedPath;
+      existingNode.file_location_id = meta
+        ? meta.file_location_id
+        : existingNode.file_location_id;
+      existingNode.has_cached_content = meta
+        ? meta.has_cached_content
+        : existingNode.has_cached_content;
+      existingNode.exists = entry.exists_flag !== 0;
+      existingNode.last_verified = entry.last_verified || null;
+      addChild(parent, existingNode);
+      continue;
+    }
+
     const fileNode = {
       name: nodeNameFromPath(normalizedPath),
       type: "file",
       path: normalizedPath,
       file_location_id: meta ? meta.file_location_id : null,
       has_cached_content: meta ? meta.has_cached_content : false,
+      exists: entry.exists_flag !== 0,
+      last_verified: entry.last_verified || null,
     };
-    map.set(normalizedPath, fileNode);
+    map.set(pathKey, fileNode);
     addChild(parent, fileNode);
   }
 
@@ -533,13 +755,110 @@ function getDirectoryTreeAsJson(agentId) {
 function getKnownFilesForContextInjection(agentId, limit = 10) {
   return getDb()
     .prepare(
-      `SELECT DISTINCT file_name, discovered_path, last_verified, is_text_file
+      `SELECT DISTINCT file_name, discovered_path, last_verified, is_text_file, exists_flag
        FROM file_locations
-       WHERE agent_id = ? AND exists_flag = 1 AND is_text_file = 1
+       WHERE agent_id = ? AND exists_flag = 1
        ORDER BY last_verified DESC
        LIMIT ?`,
     )
     .all(agentId, limit);
+}
+
+function searchCachedPathsForQuery(agentId, userQuery, limit = 8) {
+  const query = String(userQuery || "").toLowerCase();
+  if (!agentId || !query.trim()) return [];
+
+  const stopWords = new Set([
+    "the",
+    "and",
+    "are",
+    "any",
+    "there",
+    "that",
+    "this",
+    "with",
+    "from",
+    "about",
+    "have",
+    "has",
+    "does",
+    "where",
+    "what",
+    "when",
+    "into",
+    "your",
+    "their",
+    "system",
+    "machine",
+    "files",
+    "file",
+    "folder",
+    "directory",
+  ]);
+
+  const tokens = Array.from(
+    new Set(
+      query
+        .split(/[^a-z0-9]+/i)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 2 && !stopWords.has(t)),
+    ),
+  ).slice(0, 8);
+
+  if (tokens.length === 0) return [];
+
+  const fileRows = getDb()
+    .prepare(
+      `SELECT file_name, discovered_path, last_verified, exists_flag
+       FROM file_locations
+       WHERE agent_id = ?
+       ORDER BY last_verified DESC
+       LIMIT 500`,
+    )
+    .all(agentId);
+
+  const treeRows = getDb()
+    .prepare(
+      `SELECT file_name, path AS discovered_path, last_verified, exists_flag
+       FROM directory_tree
+       WHERE agent_id = ? AND is_directory = 0
+       ORDER BY last_verified DESC, discovered_at DESC
+       LIMIT 500`,
+    )
+    .all(agentId);
+
+  const combined = new Map();
+  for (const row of [...fileRows, ...treeRows]) {
+    const key = canonicalWindowsPathKey(row.discovered_path || "");
+    if (!key) continue;
+    if (!combined.has(key)) combined.set(key, row);
+  }
+
+  return Array.from(combined.values())
+    .map((row) => {
+      const haystack =
+        `${row.file_name || ""} ${row.discovered_path || ""}`.toLowerCase();
+      let score = 0;
+
+      for (const token of tokens) {
+        if ((row.file_name || "").toLowerCase().includes(token)) score += 5;
+        if ((row.discovered_path || "").toLowerCase().includes(token))
+          score += 2;
+      }
+
+      if (
+        tokens.some((t) => t === "pdf") &&
+        /\.pdf$/i.test(row.file_name || "")
+      ) {
+        score += 4;
+      }
+
+      if (score === 0 && haystack.includes(query.trim())) score += 8;
+      return score > 0 ? { ...row, score } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
 }
 
 module.exports = {
@@ -570,7 +889,10 @@ module.exports = {
   getFirstBytesOfFile,
   updateFileMetadata,
   recordDirectoryTreeEntry,
+  updateDirectoryTreeVerification,
+  reconcileDirectoryListing,
   getDirectoryContents,
   getDirectoryTreeAsJson,
   getKnownFilesForContextInjection,
+  searchCachedPathsForQuery,
 };

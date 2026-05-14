@@ -144,6 +144,9 @@ export default function FileActivity({ agent }) {
       </div>
       <div style={styles.mapWrap}>
         <div style={styles.mapHeader}>Directory Map</div>
+        <div style={styles.mapLegend}>
+          Red items are confirmed missing from the latest verified scan.
+        </div>
         <div style={styles.mapScroll}>
           {!tree || !tree.children || tree.children.length === 0 ? (
             <p style={styles.emptyMap}>No directories discovered yet.</p>
@@ -223,9 +226,10 @@ function MapNode({
     });
   });
   const isOpen = isDir ? expanded.has(node.path) : false;
-  const prefix = isDir ? (isOpen ? "-" : "+") : "·";
   const cached = !!node.has_cached_content;
   const loading = loadingPreviewPath === node.path;
+  const missing = node.exists === false;
+  const prefix = missing ? "!" : isDir ? (isOpen ? "-" : "+") : "·";
 
   return (
     <div>
@@ -235,6 +239,7 @@ function MapNode({
           paddingLeft: 8 + depth * 14,
           cursor: isDir ? "pointer" : cached ? "pointer" : "default",
           ...(cached ? styles.mapFileCached : {}),
+          ...(missing ? styles.mapRowMissing : {}),
         }}
         onClick={() => {
           if (isDir) {
@@ -246,7 +251,20 @@ function MapNode({
         title={node.path}
       >
         <span style={styles.mapPrefix}>{prefix}</span>
-        <span style={isDir ? styles.mapDir : styles.mapFile}>{node.name}</span>
+        <span
+          style={
+            missing
+              ? styles.mapMissingText
+              : isDir
+                ? styles.mapDir
+                : styles.mapFile
+          }
+        >
+          {node.name}
+        </span>
+        {missing ? (
+          <span style={styles.missingBadge}>CONFIRMED MISSING</span>
+        ) : null}
         {!isDir && cached ? (
           <span style={styles.cacheBadge}>cached</span>
         ) : null}
@@ -400,6 +418,13 @@ const styles = {
     overflowX: "hidden",
     padding: "4px 0",
   },
+  mapLegend: {
+    padding: "4px 10px",
+    fontSize: 10,
+    color: "#fca5a5",
+    background: "rgba(127, 29, 29, 0.22)",
+    borderBottom: "1px solid #2a1010",
+  },
   emptyMap: {
     color: "#3a3a5a",
     fontSize: 12,
@@ -433,6 +458,14 @@ const styles = {
   mapFileCached: {
     color: "#b8f7c8",
   },
+  mapRowMissing: {
+    background: "rgba(127, 29, 29, 0.28)",
+    borderLeft: "3px solid #ef4444",
+  },
+  mapMissingText: {
+    color: "#f87171",
+    fontWeight: 700,
+  },
   cacheBadge: {
     marginLeft: 8,
     fontSize: 9,
@@ -442,6 +475,18 @@ const styles = {
     padding: "0 4px",
     textTransform: "uppercase",
     letterSpacing: 0.4,
+  },
+  missingBadge: {
+    marginLeft: 8,
+    fontSize: 9,
+    color: "#fff1f2",
+    background: "#7f1d1d",
+    border: "1px solid #ef4444",
+    borderRadius: 3,
+    padding: "0 4px",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+    fontWeight: 700,
   },
   cacheLoading: {
     marginLeft: 8,

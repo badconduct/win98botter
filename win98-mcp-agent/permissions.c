@@ -84,6 +84,7 @@ int permission_allowed(const char *tool_name)
         strcmp(tool_name, "get_file_info")      == 0 ||
         strcmp(tool_name, "file_exists")        == 0 ||
         strcmp(tool_name, "list_directory")     == 0 ||
+        strcmp(tool_name, "find_files")         == 0 ||
         strcmp(tool_name, "list_backups")       == 0 ||
         strcmp(tool_name, "get_history")        == 0 ||
         strcmp(tool_name, "ini_read")           == 0 ||

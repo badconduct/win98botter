@@ -104,7 +104,7 @@ function getOpenAIMaxOutputTokens(apiUrl, model) {
   const m = String(model || "").toLowerCase();
 
   if (url.includes("api.groq.com") || m.includes("grok")) return 400;
-  if (m.includes("gemini")) return 500;
+  if (m.includes("gemini")) return 8192;
   if (m.includes("gpt-oss") || m.includes("llama")) return 600;
   return 800;
 }

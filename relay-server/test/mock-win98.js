@@ -191,7 +191,7 @@ function dispatch(method, params, id) {
     case "initialize":
       return buildResult(id, {
         protocol_version: "1.0",
-        server_info: { name: "Win98MCPAgent", version: "0.1.0" },
+        server_info: { name: "Win98MCPAgent", version: "0.13" },
         system_info: SYSTEM_INFO,
         permissions: {
           file_read: true,

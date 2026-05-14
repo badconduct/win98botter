@@ -16,6 +16,7 @@ cJSON *tool_copy_file(cJSON *params);
 cJSON *tool_move_file(cJSON *params);
 cJSON *tool_get_file_info(cJSON *params);
 cJSON *tool_list_directory(cJSON *params);
+cJSON *tool_find_files(cJSON *params);
 cJSON *tool_grep_file(cJSON *params);
 cJSON *tool_get_history(cJSON *params);
 cJSON *tool_file_exists(cJSON *params);

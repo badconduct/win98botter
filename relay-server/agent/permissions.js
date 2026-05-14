@@ -28,6 +28,7 @@ const TOOL_PERMISSIONS = {
   read_file: "file_read",
   get_file_info: "file_read",
   list_directory: "file_read",
+  find_files: "file_read",
   grep_file: "file_read",
   list_backups: "file_read",
   get_history: "file_read",
@@ -136,8 +137,6 @@ class PermissionsManager {
       serial: "serial",
       scheduler: "scheduler",
       screenshot: "screenshot",
-      audio: "system",
-      display: "system",
     };
 
     for (const [key, val] of Object.entries(permObj)) {
@@ -146,7 +145,11 @@ class PermissionsManager {
       );
 
       if (key in this._perms) {
-        this._perms[key] = boolVal;
+        if (key === "system") {
+          this._perms.system = boolVal;
+        } else {
+          this._perms[key] = boolVal;
+        }
         continue;
       }
 
@@ -154,6 +157,11 @@ class PermissionsManager {
         this._perms[toolLevelToCategory[key]] = boolVal;
       }
     }
+
+    // Core system inspection tools stay available whenever the agent is connected.
+    // Do not let unrelated flags such as display/audio silently disable disk info,
+    // clipboard, window listing, or other basic read-only system queries.
+    this._perms.system = true;
   }
 
   /**

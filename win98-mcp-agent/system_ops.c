@@ -46,6 +46,11 @@ static void build_default_screenshot_path(char *out_path, int out_size)
               st.wHour, st.wMinute, st.wSecond);
 }
 
+static double u64_parts_to_double(DWORD low_part, DWORD high_part)
+{
+    return ((double)high_part * 4294967296.0) + (double)low_part;
+}
+
 static int save_bitmap_to_bmp(HBITMAP h_bitmap, const char *path)
 {
     BITMAP bmp;
@@ -178,10 +183,51 @@ cJSON *tool_get_disk_info(cJSON *params)
     const char *drive = "C:\\";
     DWORD spc, bps, free_clust, total_clust;
     cJSON *result;
+    HMODULE hKernel;
+    typedef struct _BOTTER_U64_PARTS {
+        DWORD LowPart;
+        DWORD HighPart;
+    } BOTTER_U64_PARTS;
+    typedef BOOL (WINAPI *PFNGETDISKFREESPACEEXA_COMPAT)(LPCSTR, void FAR *, void FAR *, void FAR *);
+    PFNGETDISKFREESPACEEXA_COMPAT pGetDiskFreeSpaceExA = NULL;
 
     if (cJSON_IsString(j_drive)) drive = j_drive->valuestring;
 
     result = cJSON_CreateObject();
+    cJSON_AddStringToObject(result, "drive", drive);
+
+    hKernel = GetModuleHandleA("kernel32.dll");
+    if (hKernel) {
+        pGetDiskFreeSpaceExA = (PFNGETDISKFREESPACEEXA_COMPAT)GetProcAddress(hKernel, "GetDiskFreeSpaceExA");
+    }
+
+    if (pGetDiskFreeSpaceExA) {
+        BOTTER_U64_PARTS free_bytes_avail;
+        BOTTER_U64_PARTS total_bytes;
+        BOTTER_U64_PARTS total_free_bytes;
+        double total_bytes_d;
+        double free_bytes_d;
+        double total_mb;
+        double free_mb;
+
+        ZeroMemory(&free_bytes_avail, sizeof(free_bytes_avail));
+        ZeroMemory(&total_bytes, sizeof(total_bytes));
+        ZeroMemory(&total_free_bytes, sizeof(total_free_bytes));
+
+        if (pGetDiskFreeSpaceExA(drive, &free_bytes_avail, &total_bytes, &total_free_bytes)) {
+            total_bytes_d = u64_parts_to_double(total_bytes.LowPart, total_bytes.HighPart);
+            free_bytes_d  = u64_parts_to_double(total_free_bytes.LowPart, total_free_bytes.HighPart);
+            total_mb = total_bytes_d / (1024.0 * 1024.0);
+            free_mb  = free_bytes_d / (1024.0 * 1024.0);
+            cJSON_AddStringToObject(result, "api", "GetDiskFreeSpaceExA");
+            cJSON_AddNumberToObject(result, "total_mb", total_mb);
+            cJSON_AddNumberToObject(result, "free_mb", free_mb);
+            cJSON_AddNumberToObject(result, "used_mb", total_mb - free_mb);
+            cJSON_AddNumberToObject(result, "total_bytes", total_bytes_d);
+            cJSON_AddNumberToObject(result, "free_bytes", free_bytes_d);
+            return result;
+        }
+    }
 
     if (!GetDiskFreeSpaceA(drive, &spc, &bps, &free_clust, &total_clust)) {
         cJSON_AddStringToObject(result, "error", "GetDiskFreeSpace failed");
@@ -193,7 +239,8 @@ cJSON *tool_get_disk_info(cJSON *params)
         double bytes_per_cluster   = (double)spc * (double)bps;
         double total_bytes         = bytes_per_cluster * (double)total_clust;
         double free_bytes          = bytes_per_cluster * (double)free_clust;
-        cJSON_AddStringToObject(result, "drive",          drive);
+        cJSON_AddStringToObject(result, "api", "GetDiskFreeSpaceA");
+        cJSON_AddBoolToObject(result, "legacy_api_may_cap_large_volumes", 1);
         cJSON_AddNumberToObject(result, "total_mb",       total_bytes / (1024*1024));
         cJSON_AddNumberToObject(result, "free_mb",        free_bytes  / (1024*1024));
         cJSON_AddNumberToObject(result, "used_mb",
@@ -802,51 +849,86 @@ cJSON *tool_write_serial(cJSON *params)
 
 cJSON *tool_get_audio_devices(cJSON *params)
 {
-    UINT i, n;
-    cJSON *result, *arr;
+    UINT i, in_n, out_n;
+    cJSON *result, *in_arr, *out_arr;
     (void)params;
 
-    arr = cJSON_CreateArray();
-    n   = waveInGetNumDevs();
-    for (i = 0; i < n; i++) {
+    in_arr = cJSON_CreateArray();
+    out_arr = cJSON_CreateArray();
+
+    in_n = waveInGetNumDevs();
+    for (i = 0; i < in_n; i++) {
         WAVEINCAPSA caps;
         ZeroMemory(&caps, sizeof(caps));
         if (waveInGetDevCapsA(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
             cJSON *dev = cJSON_CreateObject();
-            cJSON_AddNumberToObject(dev, "id",           (double)i);
-            cJSON_AddStringToObject(dev, "name",          caps.szPname);
-            cJSON_AddNumberToObject(dev, "channels",     (double)caps.wChannels);
-            cJSON_AddItemToArray(arr, dev);
+            cJSON_AddNumberToObject(dev, "id", (double)i);
+            cJSON_AddStringToObject(dev, "name", caps.szPname);
+            cJSON_AddNumberToObject(dev, "channels", (double)caps.wChannels);
+            cJSON_AddItemToArray(in_arr, dev);
+        }
+    }
+
+    out_n = waveOutGetNumDevs();
+    for (i = 0; i < out_n; i++) {
+        WAVEOUTCAPSA caps;
+        ZeroMemory(&caps, sizeof(caps));
+        if (waveOutGetDevCapsA(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
+            cJSON *dev = cJSON_CreateObject();
+            cJSON_AddNumberToObject(dev, "id", (double)i);
+            cJSON_AddStringToObject(dev, "name", caps.szPname);
+            cJSON_AddNumberToObject(dev, "channels", (double)caps.wChannels);
+            cJSON_AddItemToArray(out_arr, dev);
         }
     }
 
     result = cJSON_CreateObject();
-    cJSON_AddItemToObject(result, "input_devices", arr);
-    cJSON_AddNumberToObject(result, "count", (double)n);
+    cJSON_AddItemToObject(result, "input_devices", in_arr);
+    cJSON_AddItemToObject(result, "output_devices", out_arr);
+    cJSON_AddNumberToObject(result, "input_count", (double)in_n);
+    cJSON_AddNumberToObject(result, "output_count", (double)out_n);
+    cJSON_AddNumberToObject(result, "count", (double)(in_n + out_n));
     return result;
 }
 
 cJSON *tool_get_midi_devices(cJSON *params)
 {
-    UINT i, n;
-    cJSON *result, *arr;
+    UINT i, in_n, out_n;
+    cJSON *result, *in_arr, *out_arr;
     (void)params;
 
-    arr = cJSON_CreateArray();
-    n   = midiInGetNumDevs();
-    for (i = 0; i < n; i++) {
+    in_arr = cJSON_CreateArray();
+    out_arr = cJSON_CreateArray();
+
+    in_n = midiInGetNumDevs();
+    for (i = 0; i < in_n; i++) {
         MIDIINCAPSA caps;
         ZeroMemory(&caps, sizeof(caps));
         if (midiInGetDevCapsA(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
             cJSON *dev = cJSON_CreateObject();
-            cJSON_AddNumberToObject(dev, "id",   (double)i);
-            cJSON_AddStringToObject(dev, "name",  caps.szPname);
-            cJSON_AddItemToArray(arr, dev);
+            cJSON_AddNumberToObject(dev, "id", (double)i);
+            cJSON_AddStringToObject(dev, "name", caps.szPname);
+            cJSON_AddItemToArray(in_arr, dev);
+        }
+    }
+
+    out_n = midiOutGetNumDevs();
+    for (i = 0; i < out_n; i++) {
+        MIDIOUTCAPSA caps;
+        ZeroMemory(&caps, sizeof(caps));
+        if (midiOutGetDevCapsA(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
+            cJSON *dev = cJSON_CreateObject();
+            cJSON_AddNumberToObject(dev, "id", (double)i);
+            cJSON_AddStringToObject(dev, "name", caps.szPname);
+            cJSON_AddItemToArray(out_arr, dev);
         }
     }
 
     result = cJSON_CreateObject();
-    cJSON_AddItemToObject(result, "midi_input_devices", arr);
-    cJSON_AddNumberToObject(result, "count", (double)n);
+    cJSON_AddItemToObject(result, "midi_input_devices", in_arr);
+    cJSON_AddItemToObject(result, "midi_output_devices", out_arr);
+    cJSON_AddNumberToObject(result, "input_count", (double)in_n);
+    cJSON_AddNumberToObject(result, "output_count", (double)out_n);
+    cJSON_AddNumberToObject(result, "count", (double)(in_n + out_n));
     return result;
 }

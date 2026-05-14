@@ -21,6 +21,8 @@ pnpm-debug.log*
 *.sqlite
 *.sqlite3
 relay-server/staging_data/
+relay-server/data/
+relay-server/relay-config.json
 
 # ── Build outputs / temp files ──────────────────────────────────────────────
 *.tmp

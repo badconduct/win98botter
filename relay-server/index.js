@@ -28,6 +28,31 @@ if (fs.existsSync(envPath)) {
   }
 }
 
+const persistentConfigPath =
+  process.env.CONFIG_JSON_PATH ||
+  path.join(
+    path.dirname(
+      process.env.DB_PATH || path.join(__dirname, "data", "relay.db"),
+    ),
+    "relay-config.json",
+  );
+if (fs.existsSync(persistentConfigPath)) {
+  try {
+    const persisted = JSON.parse(fs.readFileSync(persistentConfigPath, "utf8"));
+    if (persisted && typeof persisted === "object") {
+      for (const [key, value] of Object.entries(persisted)) {
+        if (value !== undefined && value !== null && value !== "") {
+          process.env[key] = String(value);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[relay] Failed to read persistent config ${persistentConfigPath}: ${err.message}`,
+    );
+  }
+}
+
 // -- Config --------------------------------------------------------------------
 const config = {
   botApiUrl: process.env.BOT_API_URL || "",
@@ -241,28 +266,6 @@ if (fs.existsSync(publicDir)) {
         .type("text/html; charset=utf-8")
         .send(fs.readFileSync(indexHtmlPath, "utf8"));
     }
-  });
-
-  // First-run redirect: if .env absent, send the index (SPA handles /setup)
-  fastify.addHook("onRequest", (request, reply, done) => {
-    const isApi =
-      request.url.startsWith("/api/") ||
-      request.url.startsWith("/chat") ||
-      request.url.startsWith("/sse") ||
-      request.url.startsWith("/history") ||
-      request.url.startsWith("/changes") ||
-      request.url.startsWith("/undo") ||
-      request.url.startsWith("/control") ||
-      request.url.startsWith("/health");
-    if (
-      !isApi &&
-      !fs.existsSync(envPath) &&
-      request.url !== "/" &&
-      !request.url.startsWith("/assets")
-    ) {
-      reply.redirect("/");
-    }
-    done();
   });
 }
 

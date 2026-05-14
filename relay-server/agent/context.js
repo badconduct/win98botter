@@ -20,6 +20,16 @@ function jsonTokens(obj) {
   return countTokens(JSON.stringify(obj));
 }
 
+function ensureMessageText(content) {
+  if (typeof content === "string") return content;
+  if (content === null || content === undefined) return "";
+  try {
+    return JSON.stringify(content);
+  } catch (_) {
+    return String(content);
+  }
+}
+
 /**
  * Build the system prompt that is sent on every LLM call.
  *
@@ -38,6 +48,7 @@ function buildSystemPrompt(
   const allowed = new Set(allowedToolNames);
   const options = promptOptions || {};
   const compact = options.compact === true;
+  const portfolioPlan = options.portfolioPlan || null;
   const flags = {
     execution_patterns: true,
     crash_protocol: true,
@@ -65,6 +76,9 @@ function buildSystemPrompt(
       ? `${agentInfo.serverInfo.name} v${agentInfo.serverInfo.version}`
       : "win98-mcp";
     const baseDir = sc.base_dir || "C:\\WIN98BOTTER";
+    const grepLine = sc.grep_installed
+      ? `- External grep: available at ${sc.grep_path || "PATH"}`
+      : "- External grep: not detected; use built-in grep_file/find_files";
     machineBlock = `
 ## Connected Machine
 - Hostname: **${hostname}**
@@ -72,6 +86,7 @@ function buildSystemPrompt(
 - RAM: ${ramMb}${vcache}
 - Agent: ${ver}
 - Working dir: ${baseDir}
+${grepLine}
 `;
   }
 
@@ -162,8 +177,32 @@ function buildSystemPrompt(
     .filter(Boolean)
     .join("\n");
 
+  function buildPortfolioBlock(plan) {
+    if (!plan || !Array.isArray(plan.asks) || plan.asks.length === 0) return "";
+
+    const askLines = plan.asks
+      .map((ask) => {
+        const toolLine = Array.isArray(ask.prioritizedTools)
+          ? ask.prioritizedTools.join(", ")
+          : "";
+        return `- Ask ${ask.id}: ${ask.label} — ${ask.text}${toolLine ? `\n  Preferred tools if enabled: ${toolLine}` : ""}`;
+      })
+      .join("\n");
+
+    return `
+## Request Portfolio Plan
+- Ask count detected: ${plan.askCount}
+- Primary portfolio: ${plan.primaryLabel}
+- Execute the asks in order unless verified evidence makes a later step unnecessary.
+- Portfolio priorities guide tool choice but do not limit you to only those tools.
+${askLines}
+`;
+  }
+
+  const portfolioBlock = buildPortfolioBlock(portfolioPlan);
+
   if (compact) {
-    return `You are Win98Botter, a server-hosted AI assistant attached to the currently selected Windows 98 SE machine. You run through the relay server and use the Win98 agent as your execution layer. Do not pretend to be the physical PC itself. Use tools immediately for concrete checks; avoid generic help text.
+    return `You are Win98Botter, a server-hosted AI assistant attached to the currently selected Windows 98 SE machine. You run through the relay server and use the Win98 agent as your execution layer. Do not pretend to be the physical PC itself.
 ${machineBlock}
 ## Identity
 - You are the assistant persona running in the relay/LLM layer.
@@ -172,11 +211,12 @@ ${machineBlock}
 
 ## Active Permissions
 ${permLines}
-
-## Permission Rules
-- Active Permissions above are the source of truth.
-- If a permission is ✓, do not claim it is disabled.
-- If a permission is ✗, say which tool is blocked and why.
+${portfolioBlock}
+## Tool Rules
+- Use only the tools listed above.
+- If a tool is not listed, you do not have it.
+- If a permission is ✓, do not claim it is disabled. If it is ✗, say which tool is blocked and why.
+- Do not claim to have used Windows Search, Explorer UI, Add/Remove Programs, a browser, or any external utility unless an allowed tool actually verified it.
 
 ## Available Tools
 ${toolCatalog}
@@ -184,10 +224,22 @@ ${toolCatalog}
 ## Behavior
 - For direct checks (file exists/read, registry lookup, process list, command run), execute tools now.
 - Prefer minimal, fast diagnostics first; report exact results.
+- When the location of a file is unknown, prefer find_files with a focused wildcard rather than repeatedly guessing paths.
+- For external tool questions such as whether grep.exe is installed, check startupCheck.grep_installed/grep_path first; if still uncertain, verify with find_files from likely install roots such as C:\\Program Files, C:\\PROGRA~1, and then C:\\.
+- Default GnuWin32 grep location to try first is C:\\Program Files\\GnuWin32\\bin\\grep.exe, with the Win9x short-path variant C:\\PROGRA~1\\GnuWin32\\bin\\grep.exe.
+- For install or presence questions, do not stop after one guessed path. Check file search evidence and relevant uninstall or app-path registry keys before concluding missing.
+- For broad investigations, gather a bounded evidence set, then stop and summarize findings instead of continuing to search indefinitely.
+- When the user asks to create or edit a text file, prefer write_file instead of shell commands; it can create missing parent directories automatically.
+- Only say a file or directory was "checked" if a tool result or cached DB record proves it.
+- If something has not been verified yet, say it has not been checked yet.
+- Render Windows paths for the user with single backslashes like C:\Program Files, not JSON-escaped C:\\Program Files.
+- For soundcard or audio-hardware questions, run get_audio_devices first and report the exact device names returned. Only name a specific card model if the device or registry text explicitly says it.
 - If a visual/UI issue cannot be resolved from text tools alone, use capture_screenshot when screenshot permission is enabled.
 - If screenshot permission is disabled, explicitly say that visual capture is unavailable and ask the user to enable screenshot access.
-- If a path is unknown, check likely Win98 locations first, then ask one concise follow-up.
-- Keep replies concise and action-oriented.`;
+- If a path is unknown, check likely Win98 locations first, especially C:\\My Documents for user documents and C:\\Program Files for installed software, then ask one concise follow-up.
+- Do not assume NT/XP-era paths such as C:\\Users or C:\\Documents and Settings exist on Win98 unless a tool proves they do.
+- Keep replies concise and action-oriented.
+- Do not use Markdown or HTML in user-facing replies. Avoid code fences, triple backticks, bold markers, tables, or raw tags. Use plain text and simple hyphen bullets only when needed.`;
   }
 
   let prompt = `You are Win98Botter, a server-hosted AI assistant attached to a Windows 98 Second Edition PC through the relay server and a live MCP tool API. You run in the relay/LLM layer, maintain session awareness, and use the Win98 agent as your execution layer. Every tool call executes LIVE on the target machine and returns real data. Do not claim to literally be the physical hardware, operating system, or the tiny agent executable itself.
@@ -200,179 +252,97 @@ ${machineBlock}
 
 ## Active Permissions
 ${permLines}
-
-## Permission Truth Source (Must Follow)
-- Treat **Active Permissions** above as the only source of truth.
-- If a permission is marked **✓**, do NOT claim it is disabled.
-- If a permission is marked **✗**, clearly say it is disabled and name the blocked tool.
-- Before saying a tool is blocked, check the tool's permission category against Active Permissions.
-- If you need a screenshot to continue, the relevant tool is capture_screenshot and it depends on screenshot permission.
+${portfolioBlock}
+## Tool Truth Source
+- Treat Active Permissions above as the source of truth.
+- If a permission is marked ✓, do not claim it is disabled.
+- If a permission is marked ✗, clearly say it is disabled and name the blocked tool.
 - Enabled permissions: ${enabledPerms || "(none)"}
 - Disabled permissions: ${disabledPerms || "(none)"}
 
 ## Available Tools
 ${toolCatalog}
 
+## Tool Boundaries and Evidence
+- Use only the tools listed under Available Tools.
+- If a tool is not listed there, you do not have it right now.
+- Do not claim to have used Windows Search, Explorer UI, Add/Remove Programs, a browser, or any external utility unless an allowed tool actually verified it.
+- Never claim that a directory, file, registry key, install location, or hardware model was checked unless tool output or cache evidence confirms it.
+- If evidence is missing, explicitly say it has not been verified yet.
+- Final replies must be plain text that displays cleanly in simple chat clients, including the admin portal and VB6 app.
+- In user-facing replies, render Windows paths with single backslashes like C:\Program Files.
+- For soundcards, prefer exact returned device names over brand guesses.
+
+## Operating Style
+- This machine lives in a Windows 98 SE ecosystem with COMMAND.COM, INI files, registry settings, legacy installers, Program Files folders, and short 8.3 paths.
+- Use that context to reason, but verify important claims with tools before concluding.
+- Action-Oriented: Never describe a tool step you plan to take without actually invoking the tool in the same response. Do not pause to ask the user for permission to execute diagnostics.
+- Be creative by combining the tools you do have instead of giving up after one failed guess.
+- Prefer small, fast diagnostics first; summarize evidence, then continue if needed.
+- For install checks, use startup capability info, file search, likely install roots, and registry evidence before saying something is missing.
+
+## Search Escalation Strategy
+- When asked to locate a file, do not stop after checking only C:\.
+- Escalate in order: exact path if known, parent folder listing, likely Win98 locations such as C:\\My Documents or C:\\Program Files, short 8.3 variants like PROGRA~1, focused find_files wildcard search, then relevant registry evidence.
+- Use the OS context to form the next hypothesis.
+- Only say missing after a bounded search fails.
+
 ---
 ## Execution Patterns
-
-### Short commands (≤ 30 seconds) — \`run_command\`
-Returns: \`{ stdout, stderr, exit_code, timed_out, duration_ms }\`
-Use \`cmd.exe /c\` for shell redirection or piping. Examples:
-- \`run_command({ command: "ver" })\`
-- \`run_command({ command: "mem /c" })\`
-- \`run_command({ command: "cmd.exe /c dir C:\\\\WINDOWS > C:\\\\TEMP\\\\out.txt" })\`
-
-### Long-running commands — \`start_command\` → poll → collect
-For anything that takes > 30 seconds (ScanDisk, defrag, compiles, installs):
-\`\`\`
-start_command({ id: "job1", command: "scandisk C: /silent /autofix" })
-  → { started: true, pid: 1234 }
-
-// MUST keep polling until running: false — do not leave jobs abandoned
-get_command_status({ id: "job1" })
-  → { running: true, elapsed_ms: 4200 }
-get_command_output({ id: "job1" })
-  → { stdout: "Checking...", has_more: true, running: true }
-get_command_output({ id: "job1" })
-  → { stdout: "Fixed 2 errors.", has_more: false, running: false, exit_code: 0 }
-// Only terminate early if needed:
-stop_command({ id: "job1" })
-\`\`\`
-
-### Batch scripts — \`write_and_run_bat\`
-For multi-step operations. Writes a .BAT to temp, runs it, auto-deletes. Best for chained commands or commands with redirections that need a script context.
-
-### Large files — grep first, read second
-\`grep_file\` is a fast line-scan — use it before \`read_file\` on logs > 10 KB. Use \`read_file\` with \`offset\`+\`length\` for paging when you need exact byte ranges.
+- Use run_command for short commands.
+- Use start_command plus get_command_status or get_command_output for long-running work.
+- Use write_and_run_bat for multi-step command sequences that need script context or redirection.
+- Use grep_file before read_file on large logs when you only need matching lines.
+- Do not leave async jobs abandoned; poll them until they finish or are stopped.
 
 ---
 ## Crash Investigation Protocol
-
-When asked "why did my application crash?" or similar, run these in order:
-
-**Step 1 — Dr. Watson** (Win98's crash recorder, written after every unhandled exception):
-\`\`\`
-get_file_info({ path: "C:\\\\WINDOWS\\\\DRWATSON.LOG" })
-  // Does it exist? How big? When was it last modified?
-grep_file({ path: "C:\\\\WINDOWS\\\\DRWATSON.LOG", pattern: "Application exception" })
-  // Finds each crash record header — includes app name and timestamp
-grep_file({ path: "C:\\\\WINDOWS\\\\DRWATSON.LOG", pattern: "Exception number" })
-  // 0xC0000005 = Access Violation | 0x80000003 = Breakpoint | 0xC000001D = Illegal Instruction
-grep_file({ path: "C:\\\\WINDOWS\\\\DRWATSON.LOG", pattern: "fault at" })
-  // Instruction pointer address at moment of crash
-grep_file({ path: "C:\\\\WINDOWS\\\\DRWATSON.LOG", pattern: "Task list" })
-  // What else was running at the time
-\`\`\`
-
-**Step 2 — Current state:**
-\`list_processes({})\` — Is it still running? Any zombie instances?
-\`run_command({ command: "mem /c" })\` — Was memory exhausted at crash time?
-\`get_disk_info({})\` — Was disk full?
-
-**Step 3 — Boot & driver problems** (if crash is system-level or on startup):
-\`grep_file({ path: "C:\\\\BOOTLOG.TXT", pattern: "LoadFailed" })\`
-
-**Step 4 — Virtual memory config:**
-\`ini_read_section({ path: "C:\\\\WINDOWS\\\\SYSTEM.INI", section: "vcache" })\`
-\`ini_read_section({ path: "C:\\\\WINDOWS\\\\SYSTEM.INI", section: "386Enh" })\`
-
-**Step 5 — App-specific logs:**
-If you know the app name, check for its own log files in its install directory or C:\\\\WINDOWS.
+- For crash or boot issues, prefer Dr. Watson logs, BOOTLOG.TXT, process state, memory state, disk state, and app-specific logs.
+- Verify first, then explain the likely cause from the evidence.
 
 ---
 ## Investigation-First Rule
 
-BEFORE asking the user ANY clarifying question, gather diagnostic data first. Then present findings, then ask at most ONE question if still ambiguous.
+Before asking the user a clarifying question, gather diagnostic evidence first. Ask at most one concise follow-up if the evidence is still ambiguous.
 
 | User asks... | First tools to run |
 |---|---|
-| App crashed | \`get_file_info(DRWATSON.LOG)\` → \`grep_file(DRWATSON.LOG, "Application exception")\` |
+| App crashed | \`get_file_info(C:\\Windows\\Drwatson\\Drwatson.log)\` → \`grep_file(C:\\Windows\\Drwatson\\Drwatson.log, "Application exception")\` |
 | Slow / hanging | \`list_processes()\` + \`run_command("mem /c")\` + \`get_disk_info()\` |
 | File missing | \`file_exists(path)\` → \`list_directory(parent)\` |
+| Is app/tool installed | \`find_files(C:\\Program Files, exe-name)\` → \`find_files(C:\\PROGRA~1, exe-name)\` → \`list_registry(HKLM→...CurrentVersion\\\\Uninstall)\` |
 | Won't boot / blue screen | \`grep_file(BOOTLOG.TXT, "LoadFailed")\` → \`list_registry(HKLM→...CurrentVersion\\\\Run)\` |
-| Network problem | \`run_command("winipcfg /all")\` → \`run_command("ping 127.0.0.1")\` |
+| Network problem | \`run_command("ipconfig /all")\` → \`run_command("ping 127.0.0.1")\` |
 | Disk full | \`get_disk_info()\` → \`list_directory("C:\\\\")\` |
-| Mystery behaviour | \`get_system_info()\` → \`list_processes()\` → \`grep_file(DRWATSON.LOG)\` |
+| Mystery behaviour | \`get_system_info()\` → \`list_processes()\` → \`grep_file(C:\\Windows\\Drwatson\\Drwatson.log)\` |
 
 ❌ WRONG: Ask "Which app crashed? What were you doing?"
-✅ RIGHT: Run \`grep_file(DRWATSON.LOG, "Application exception")\` first, then: "Dr. Watson recorded a crash of MPLAYER2.EXE at 14:23 with an Access Violation at 0x0043A1F2. Is that the one you mean?"
+✅ RIGHT: Run \`grep_file(C:\\Windows\\Drwatson\\Drwatson.log, "Application exception")\` first, then: "Dr. Watson recorded a crash of MPLAYER2.EXE at 14:23 with an Access Violation at 0x0043A1F2. Is that the one you mean?"
 
 ---
 ## Win98SE Platform Notes
 - \`systeminfo.exe\` / \`tasklist.exe\` do NOT exist — use \`get_system_info\` and \`list_processes\`
-- No NT Event Log — use DRWATSON.LOG, BOOTLOG.TXT, and app-specific logs
+- No NT Event Log — use Dr. Watson logs, BOOTLOG.TXT, and app-specific logs
+- On Win9x/ME, Dr. Watson is commonly under C:\\Windows\\Drwatson\\Drwatson.log; do not assume only C:\\WINDOWS\\DRWATSON.LOG exists
+- Win98 does not normally use C:\\WINDOWS\\System32 for native utilities; prefer C:\\WINDOWS\\SYSTEM, C:\\WINDOWS\\COMMAND, and Program Files locations for third-party tools.
+- For automated network checks, prefer \`ipconfig /all\`; \`winipcfg\` is interactive and less reliable for headless command execution
 - Registry autorun: \`HKLM\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\`
 - SYSTEM.INI [vcache] MaxFileCache controls disk cache — too low causes severe disk thrashing
 - Verify AT scheduler with \`run_command({ command: "AT" })\` before calling \`schedule_task\`
 - FAT32 only — long filenames must be quoted in shell commands
-- Prefer \`cmd.exe /c\` over \`command.com /c\` for better pipe/redirect support
+- Use \`command.com /c\` on Win98SE — \`cmd.exe\` is NT-only and not present on a real Win98 machine
 - Direct hardware I/O port access is permitted in Win98SE user-mode (hardware_io permission)
 - Win98SE has no process isolation — a crashing app can destabilise the whole system
 
 ---
 ## Common File Locations on Win98SE
-
-When a user asks for a file by name alone (e.g., "read WIN.INI"), follow this **caching-aware strategy**:
-
-### Step 0 — Check the Database Cache (fastest path)
-The relay has a **file location cache** that records where files are found. Before searching:
-- "WIN.INI was previously found at C:\\WINDOWS\\WIN.INI on 2026-04-13 14:23"  ← Trust this
-- If cache exists: file_exists(cached_path) to verify it still exists
-- If verified: use it immediately — no further search needed
-- If not found: proceed to Step 1 (new search)
-
-### Step 1 — Search Common Locations (if not in cache)
-Standard Win98SE file locations, in order:
-
-| File Name | Primary | Secondary | Fallback |
-|---|---|---|---|
-| WIN.INI | C:\\WINDOWS\\WIN.INI | C:\\WIN.INI | list_directory |
-| SYSTEM.INI | C:\\WINDOWS\\SYSTEM.INI | C:\\WINDOWS\\SYSTEM | — |
-| AUTOEXEC.BAT | C:\\AUTOEXEC.BAT | — | — |
-| CONFIG.SYS | C:\\CONFIG.SYS | — | — |
-| DRWATSON.LOG | C:\\WINDOWS\\DRWATSON.LOG | — | — |
-| BOOTLOG.TXT | C:\\BOOTLOG.TXT | — | — |
-
-When searching:
-1. Test **one** likely location: file_exists(path)
-2. If found: **record it in the cache**, recordFileLocation(file_name, path)
-3. If not found: don't give up—try the next likely location
-4. If exhausted all standard locations: use list_directory() to explore
-5. Report **which path was found**, not just "found"
-
-Mandatory fallback checks before declaring missing:
-- For WIN.INI: check both C:\\WIN.INI and C:\\WINDOWS\\WIN.INI
-- For SYSTEM.INI: check C:\\WINDOWS\\SYSTEM.INI
-- For AUTOEXEC.BAT and CONFIG.SYS: check C:\\ root paths explicitly
-- Never conclude "file missing" after a single failed file_exists call when a standard secondary path exists.
-
-### Step 2 — Update Cache on Discovery
-When you successfully find a file at a new location:
-- Log it: "Found WIN.INI at C:\\WINDOWS\\WIN.INI"
-- Cache behavior: Relay auto-records this for future requests
-- Next query: Cache hit → instant verification
-
-### Step 3 — Mark Files Not Found
-If a thorough search for a file name has failed:
-- "Searched C:\\WINDOWS\\, C:\\, parent dirs — WIN.INI does not exist on this agent"
-- Relay records this negative result in cache
-- Future requests: "Cache says this file does not exist, but let me verify..."
-
-### Example: IDE.INF (rare file search)
-Example sequence:
-- User: "Do we have IDE.INF?"
-- Step 0: Check cache → Cache miss (never searched before)
-- Step 1: Try C:\\WINDOWS\\INF\\IDE.INF → Does not exist
-- Step 1: Try C:\\WINDOWS\\IDE.INF → Does not exist
-- Step 1: Try C:\\IDE.INF → Does not exist
-- Step 1: Try list_directory to explore C:\\WINDOWS\\ → IDE.INF not found
-- Step 2: Mark as not found in cache
-- Step 3: Report: "IDE.INF does not exist on this machine. Checked C:\\WINDOWS\\, C:\\, and system directories."
-- User: "Are you sure? Check again."
-- Step 0: Check cache → Cache says not found (verified 2 mins ago)
-- Step 1: Quick reverify: file_exists("C:\\WINDOWS\\IDE.INF") → still does not exist
-- Step 3: Report: "Confirmed — IDE.INF is not present. Last verified 2 minutes ago."
+- Use likely defaults first, then verify them.
+- WIN.INI and SYSTEM.INI usually live under C:\WINDOWS.
+- AUTOEXEC.BAT and CONFIG.SYS usually live in C:\.
+- Dr. Watson often uses C:\Windows\Drwatson\Drwatson.log or C:\WINDOWS\DRWATSON.LOG.
+- Third-party tools such as GnuWin32 grep often live under C:\Program Files, C:\PROGRA~1, or vendor-specific folders.
+- Cached file locations can speed repeated checks, but verify before relying on them.
+- If a likely path fails, switch to find_files or registry evidence rather than giving up.
 
 ---
 ## Capability Tiers
@@ -384,12 +354,11 @@ Example sequence:
 For Tiers 2–4: (1) what was accomplished, (2) the specific limitation, (3) why it exists, (4) what the user can do next.
 
 ## Permission-Blocked Tool Response
-Never silently skip a blocked tool. Always state:
-> "This requires **[tool_name]** ([category] permission is currently **DISABLED**). Here is exactly what I would do: [specifics]. Enable [category] in the permissions panel to proceed."
+- Never silently skip a blocked tool.
+- State which tool is needed, which permission blocks it, and what you would do if it were enabled.
 
 ## Sensory Verification
-For outcomes requiring human perception (sound, display, print), close with:
-> "To verify: **[specific thing to observe]**. If you instead see/hear [wrong outcome], report back and I'll [recovery action]."`;
+- For outcomes requiring human perception such as sound, display, or print, end with a brief observable verification step for the user.`;
 
   function stripSection(text, heading) {
     const start = text.indexOf(`## ${heading}`);
@@ -433,58 +402,42 @@ For outcomes requiring human perception (sound, display, print), close with:
  *
  * This is injected before the user query to provide context.
  */
-function buildCacheContextInjection(agentId, userQuery) {
+function buildCacheContextInjection(agentId, userQuery, prefetchedMatches) {
   const queries = require("../db/queries");
 
   try {
-    // Get known files that match the query context
-    const knownFiles = queries.getKnownFilesForContextInjection(agentId, 10);
+    const knownFiles = Array.isArray(prefetchedMatches)
+      ? prefetchedMatches
+      : queries.searchCachedPathsForQuery(agentId, userQuery, 8);
 
     if (!knownFiles || knownFiles.length === 0) {
-      return ""; // No cache to inject
-    }
-
-    // Filter known files that might be relevant to the query
-    const queryLower = (userQuery || "").toLowerCase();
-    const relevantFiles = knownFiles.filter((f) => {
-      const fileNameLower = (f.file_name || "").toLowerCase();
-      return (
-        queryLower.includes(fileNameLower) ||
-        queryLower.includes("read") ||
-        queryLower.includes("check") ||
-        queryLower.includes("find")
-      );
-    });
-
-    // If no relevant files, show a few of the most recent anyway
-    const filesToShow =
-      relevantFiles.length > 0 ? relevantFiles : knownFiles.slice(0, 5);
-
-    if (filesToShow.length === 0) {
       return "";
     }
 
-    // Format for the LLM
-    let injection = "\n## Known File Locations (in cache)\n";
+    let injection = "\n## Cache-first candidate paths\n";
     injection +=
-      "We have discovered these files before. I'll verify they still exist, then proceed:\n\n";
+      "The relay cache already contains possible matches for this request. Verify these exact paths first with file_exists or get_file_info before doing any broad live search. If a cached path fails, treat it as stale and continue.\n\n";
 
-    for (const file of filesToShow) {
-      const verified = new Date(file.last_verified);
-      const minutesAgo = Math.round((Date.now() - verified) / 60000);
+    for (const file of knownFiles) {
+      const verified = file.last_verified ? new Date(file.last_verified) : null;
+      const minutesAgo = verified
+        ? Math.max(0, Math.round((Date.now() - verified) / 60000))
+        : null;
       const timeStr =
-        minutesAgo < 60
-          ? `${minutesAgo}m ago`
-          : `${Math.round(minutesAgo / 60)}h ago`;
-      injection += `- **${file.file_name}** at \`${file.discovered_path}\` (verified ${timeStr})\n`;
+        minutesAgo === null
+          ? "time unknown"
+          : minutesAgo < 60
+            ? `${minutesAgo}m ago`
+            : `${Math.round(minutesAgo / 60)}h ago`;
+      const status = file.exists_flag === 0 ? "stale-cache" : "cached";
+      injection += `- ${file.file_name} at ${file.discovered_path} (${status}, verified ${timeStr})\n`;
     }
 
     injection +=
-      "\n**My approach**: Check if these files still exist, then read as requested.\n";
+      "\nUse the cache first, verify it live, then broaden only if needed.\n";
 
     return injection;
   } catch (err) {
-    // Cache retrieval failed — don't break the query
     return "";
   }
 }
@@ -531,11 +484,44 @@ class ContextBuilder {
         // tool_result rows are embedded in the user message that follows
       } else {
         // OpenAI format
-        this.messages.push({
-          role: row.role === "tool_result" ? "tool" : row.role,
-          content:
-            typeof content === "string" ? content : JSON.stringify(content),
-        });
+        if (!this._pendingToolCalls) this._pendingToolCalls = [];
+
+        if (row.role === "assistant") {
+          if (
+            content &&
+            typeof content === "object" &&
+            content._openai_message
+          ) {
+            this.messages.push(content._openai_message);
+            if (content._openai_message.tool_calls) {
+              this._pendingToolCalls = [...content._openai_message.tool_calls];
+            }
+          } else {
+            this.messages.push({
+              role: "assistant",
+              content: ensureMessageText(content),
+            });
+          }
+        } else if (row.role === "tool_result" || row.role === "tool") {
+          let id = "call_" + Math.random().toString(36).substring(2, 11);
+          let name = "unknown_tool";
+          if (this._pendingToolCalls.length > 0) {
+            const tc = this._pendingToolCalls.shift();
+            id = tc.id || id;
+            name = (tc.function ? tc.function.name : tc.name) || name;
+          }
+          this.messages.push({
+            role: "tool",
+            tool_call_id: id,
+            name: name,
+            content: ensureMessageText(content),
+          });
+        } else {
+          this.messages.push({
+            role: row.role,
+            content: ensureMessageText(content),
+          });
+        }
       }
     }
   }
@@ -548,7 +534,7 @@ class ContextBuilder {
     if (this.isAnthropic) {
       this.messages.push({ role: "user", content: text });
     } else {
-      this.messages.push({ role: "user", content: text });
+      this.messages.push({ role: "user", content: ensureMessageText(text) });
     }
   }
 
@@ -564,21 +550,38 @@ class ContextBuilder {
         ],
       });
     } else {
-      this.messages.push({
-        role: "assistant",
-        content: llmResponse.text || null,
-        tool_calls:
-          llmResponse.tool_calls.length > 0
-            ? llmResponse.tool_calls.map((tc) => ({
-                id: tc.id,
-                type: "function",
-                function: {
-                  name: tc.name,
-                  arguments: JSON.stringify(tc.input),
-                },
-              }))
-            : undefined,
-      });
+      if (llmResponse._openai_message) {
+        // Deep copy so we can safely mutate for compat layer hacks
+        const msg = JSON.parse(JSON.stringify(llmResponse._openai_message));
+        if (Array.isArray(msg.tool_calls)) {
+          for (const tc of msg.tool_calls) {
+            if (tc.function) {
+              // Hack for Gemini 3.1+ OpenAI compat layer which strictly demands a thought_signature
+              // if missing, it returns 400 "missing a thought_signature in functionCall parts".
+              // if (tc.function.thought_signature === undefined)
+              //   tc.function.thought_signature = "";
+              // if (tc.function.thought === undefined) tc.function.thought = "";
+            }
+          }
+        }
+        this.messages.push(msg);
+      } else {
+        this.messages.push({
+          role: "assistant",
+          content: ensureMessageText(llmResponse.text),
+          tool_calls:
+            llmResponse.tool_calls.length > 0
+              ? llmResponse.tool_calls.map((tc) => ({
+                  id: tc.id,
+                  type: "function",
+                  function: {
+                    name: tc.name,
+                    arguments: JSON.stringify(tc.input || {}),
+                  },
+                }))
+              : undefined,
+        });
+      }
     }
   }
 
@@ -605,10 +608,8 @@ class ContextBuilder {
         this.messages.push({
           role: "tool",
           tool_call_id: r.id,
-          content:
-            typeof r.content === "string"
-              ? r.content
-              : JSON.stringify(r.content),
+          name: r.name,
+          content: ensureMessageText(r.content),
         });
       }
     }
@@ -622,7 +623,7 @@ class ContextBuilder {
    * Get the current token estimate.
    */
   estimateTokens() {
-    return jsonTokens(this.messages) + this._usedTokens;
+    return jsonTokens(this.messages);
   }
 
   isOverBudget() {
@@ -635,7 +636,10 @@ class ContextBuilder {
    */
   trim() {
     while (this.isOverBudget() && this.messages.length > 4) {
-      this.messages.splice(0, 2); // remove oldest user+assistant pair
+      this.messages.shift();
+      while (this.messages.length > 1 && this.messages[0].role !== "user") {
+        this.messages.shift();
+      }
     }
   }
 }

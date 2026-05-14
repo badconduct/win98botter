@@ -10,6 +10,23 @@ const CHAT_SOURCE = "administrator";
  * with tool calls displayed as collapsible rows.
  * Also provides an input to send a new user message.
  */
+function normalizeDisplayText(text) {
+  if (typeof text !== "string") return "";
+
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/```[a-z0-9_-]*\n?/gi, "")
+    .replace(/```/g, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/?(code|pre|strong|em|b|i|u|p)\b[^>]*>/gi, "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/__(.*?)__/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .trim();
+}
+
 export default function ChatPanel({ agent }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -140,7 +157,7 @@ function MessageRow({ msg }) {
         }}
       >
         <span style={styles.roleLabel}>{isUser ? "You" : "Bot"}</span>
-        <p style={styles.text}>{content}</p>
+        <p style={styles.text}>{normalizeDisplayText(content)}</p>
       </div>
     );
   }
@@ -159,7 +176,7 @@ function MessageRow({ msg }) {
         if (part.type === "text") {
           return (
             <p key={i} style={styles.text}>
-              {part.text}
+              {normalizeDisplayText(part.text)}
             </p>
           );
         }

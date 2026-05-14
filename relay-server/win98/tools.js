@@ -150,7 +150,7 @@ const TOOL_SCHEMAS = [
   {
     name: "list_directory",
     description:
-      "List files and subdirectories. Returns names, sizes, and modification dates.",
+      "List files and subdirectories. Returns names, sizes, and modification dates. When recursive is true, it searches nested folders too.",
     input_schema: {
       type: "object",
       properties: {
@@ -165,6 +165,38 @@ const TOOL_SCHEMAS = [
         },
       },
       required: ["path"],
+    },
+  },
+  {
+    name: "find_files",
+    description:
+      "Recursively search for files or directories by wildcard name starting from a folder. Best tool when the exact location is unknown.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute starting directory path",
+        },
+        pattern: {
+          type: "string",
+          description:
+            "Wildcard filename pattern, e.g. DRWATSON.LOG, *.LOG, or TRIBES*",
+        },
+        recursive: {
+          type: "boolean",
+          description: "Search nested subdirectories too (default true)",
+        },
+        include_dirs: {
+          type: "boolean",
+          description: "Include matching directories in the results",
+        },
+        max_results: {
+          type: "integer",
+          description: "Maximum results to return (default 100)",
+        },
+      },
+      required: ["path", "pattern"],
     },
   },
   {
@@ -694,7 +726,8 @@ const TOOL_SCHEMAS = [
   // ── Audio / MIDI Enumeration ────────────────────────────────────────────────
   {
     name: "get_audio_devices",
-    description: "List all installed audio input and output devices.",
+    description:
+      "List installed audio input and output device names reported by Win98 multimedia APIs.",
     input_schema: {
       type: "object",
       properties: {},

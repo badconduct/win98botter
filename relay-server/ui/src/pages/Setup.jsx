@@ -3,6 +3,7 @@ import { api } from "../api/index.js";
 
 const LOG_MAX = 120;
 const DEFAULT_MODEL = "gpt-oss:20b";
+const REDACTED_SECRET = "********";
 
 const PROVIDERS = [
   {
@@ -14,6 +15,12 @@ const PROVIDERS = [
     label: "OpenAI",
     urlHint: "https://api.openai.com/v1",
     modelHint: "gpt-4o",
+  },
+  {
+    label: "Google (Gemini)",
+    urlHint: "https://generativelanguage.googleapis.com/v1beta/openai",
+    modelHint: "gemini-2.0-flash",
+    note: "Use Google’s OpenAI-compatible Gemini endpoint here for the current relay adapter.",
   },
   {
     label: "Ollama (local)",
@@ -41,6 +48,7 @@ export default function Setup({ onDone, mode = "setup" }) {
   const [providerIdx, setProviderIdx] = useState(0);
   const [apiUrl, setApiUrl] = useState(PROVIDERS[0].urlHint);
   const [apiKey, setApiKey] = useState("");
+  const [hasStoredApiKey, setHasStoredApiKey] = useState(false);
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [httpPort, setHttpPort] = useState("3000");
   const [tcpPort, setTcpPort] = useState("9000");
@@ -92,7 +100,10 @@ export default function Setup({ onDone, mode = "setup" }) {
       .then((config) => {
         if (cancelled) return;
         setApiUrl(config.BOT_API_URL || "");
-        setApiKey(config.BOT_API_KEY || "");
+        setHasStoredApiKey(
+          !!config.BOT_API_KEY && config.BOT_API_KEY === REDACTED_SECRET,
+        );
+        setApiKey("");
         setModel(config.BOT_MODEL || DEFAULT_MODEL);
         setHttpPort(config.HTTP_PORT || "3000");
         setTcpPort(config.WIN98_LISTEN_PORT || "9000");
@@ -269,7 +280,11 @@ export default function Setup({ onDone, mode = "setup" }) {
                 setTestState("idle");
               }}
               placeholder={
-                providerIdx >= 2 ? "(leave blank for local servers)" : "sk-…"
+                hasStoredApiKey
+                  ? "Saved key on server — leave blank to keep it"
+                  : providerIdx === 3 || providerIdx === 4
+                    ? "(leave blank for local servers)"
+                    : "sk-…"
               }
               autoComplete="off"
             />
@@ -308,20 +323,22 @@ export default function Setup({ onDone, mode = "setup" }) {
             </div>
             {testState === "fail" && (
               <div style={styles.testHints}>
-                {!apiUrl.endsWith("/v1") && (
-                  <p style={styles.testHint}>
-                    ⚠️ Ollama’s OpenAI-compatible endpoint ends in{" "}
-                    <code style={styles.code}>/v1</code>, not{" "}
-                    <code style={styles.code}>/api</code>.
-                  </p>
-                )}
-                {apiUrl.includes("localhost") && (
-                  <p style={styles.testHint}>
-                    ⚠️ Running inside Docker? Use{" "}
-                    <code style={styles.code}>host.docker.internal</code>{" "}
-                    instead of <code style={styles.code}>localhost</code>.
-                  </p>
-                )}
+                {(providerIdx === 3 || apiUrl.includes(":11434")) &&
+                  !apiUrl.endsWith("/v1") && (
+                    <p style={styles.testHint}>
+                      ⚠️ Ollama’s OpenAI-compatible endpoint ends in{" "}
+                      <code style={styles.code}>/v1</code>, not{" "}
+                      <code style={styles.code}>/api</code>.
+                    </p>
+                  )}
+                {(providerIdx === 3 || apiUrl.includes(":11434")) &&
+                  apiUrl.includes("localhost") && (
+                    <p style={styles.testHint}>
+                      ⚠️ Running inside Docker? Use{" "}
+                      <code style={styles.code}>host.docker.internal</code>{" "}
+                      instead of <code style={styles.code}>localhost</code>.
+                    </p>
+                  )}
                 {testError.includes("ECONNREFUSED") &&
                   (apiUrl.includes("host.docker.internal") ||
                     apiUrl.includes("127.0.0.1")) && (

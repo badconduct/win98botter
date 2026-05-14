@@ -33,9 +33,6 @@ function initDb(dbPath) {
       token_total INTEGER DEFAULT 0
     );
 
-    CREATE INDEX IF NOT EXISTS idx_sessions_agent_source_started
-      ON sessions(agent_id, source, started_at);
-
     CREATE TABLE IF NOT EXISTS messages (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id  TEXT NOT NULL,
@@ -102,13 +99,15 @@ function initDb(dbPath) {
       ON file_contents(file_location_id, line_start);
 
     CREATE TABLE IF NOT EXISTS directory_tree (
-      id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      agent_id     TEXT NOT NULL,
-      path         TEXT NOT NULL,
-      file_name    TEXT NOT NULL,
-      is_directory INTEGER DEFAULT 0,
-      parent_path  TEXT,
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id      TEXT NOT NULL,
+      path          TEXT NOT NULL,
+      file_name     TEXT NOT NULL,
+      is_directory  INTEGER DEFAULT 0,
+      parent_path   TEXT,
       discovered_at TEXT NOT NULL,
+      exists_flag   INTEGER DEFAULT 1,
+      last_verified TEXT,
       UNIQUE(agent_id, path)
     );
 
@@ -136,6 +135,24 @@ function initDb(dbPath) {
     );
   }
 
+  const dirCols = db.prepare("PRAGMA table_info(directory_tree)").all();
+  const hasDirExistsFlag = dirCols.some((c) => c.name === "exists_flag");
+  const hasDirLastVerified = dirCols.some((c) => c.name === "last_verified");
+
+  if (!hasDirExistsFlag) {
+    db.exec(
+      "ALTER TABLE directory_tree ADD COLUMN exists_flag INTEGER DEFAULT 1",
+    );
+  }
+  if (!hasDirLastVerified) {
+    db.exec("ALTER TABLE directory_tree ADD COLUMN last_verified TEXT");
+  }
+  db.exec(`
+    UPDATE directory_tree
+    SET exists_flag = COALESCE(exists_flag, 1),
+        last_verified = COALESCE(last_verified, discovered_at)
+  `);
+
   const sessionCols = db.prepare("PRAGMA table_info(sessions)").all();
   const hasSessionSource = sessionCols.some((c) => c.name === "source");
   if (!hasSessionSource) {
@@ -144,6 +161,11 @@ function initDb(dbPath) {
     );
     db.exec("UPDATE sessions SET source = COALESCE(source, 'administrator')");
   }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sessions_agent_source_started
+      ON sessions(agent_id, source, started_at)
+  `);
 
   return db;
 }

@@ -10,8 +10,17 @@ const fs = require("fs");
 const path = require("path");
 
 const ENV_PATH = path.join(__dirname, "..", ".env");
+const CONFIG_JSON_PATH =
+  process.env.CONFIG_JSON_PATH ||
+  path.join(
+    path.dirname(
+      process.env.DB_PATH || path.join(__dirname, "..", "data", "relay.db"),
+    ),
+    "relay-config.json",
+  );
 
 const PROVIDERS = ["claude", "openai", "ollama"];
+const REDACTED_SECRET = "********";
 
 /** True when the URL points at Anthropic's API. */
 function isAnthropic(url) {
@@ -38,22 +47,48 @@ function writeEnv(obj) {
   fs.writeFileSync(ENV_PATH, lines.join("\n") + "\n", "utf8");
 }
 
+/** Read durable JSON config persisted outside the container image. */
+function readPersistentConfig() {
+  try {
+    if (!fs.existsSync(CONFIG_JSON_PATH)) return {};
+    const parsed = JSON.parse(fs.readFileSync(CONFIG_JSON_PATH, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Write durable JSON config persisted outside the container image. */
+function writePersistentConfig(obj) {
+  fs.mkdirSync(path.dirname(CONFIG_JSON_PATH), { recursive: true });
+  fs.writeFileSync(
+    CONFIG_JSON_PATH,
+    JSON.stringify(obj, null, 2) + "\n",
+    "utf8",
+  );
+}
+
+/** Current effective config: live environment, .env defaults, plus durable overrides. */
+function readEffectiveConfig() {
+  return { ...process.env, ...readEnv(), ...readPersistentConfig() };
+}
+
 async function configRoutes(fastify, opts) {
   // ── GET /api/config/check ──────────────────────────────────────────────────
   fastify.get("/api/config/check", async (_req, reply) => {
-    const env = readEnv();
+    const env = readEffectiveConfig();
     const configured = !!(env.BOT_API_URL || env.BOT_API_KEY || env.BOT_MODEL);
-    return reply.send({ configured });
+    return reply.send({ configured, config_path: CONFIG_JSON_PATH });
   });
 
   // ── GET /api/config ────────────────────────────────────────────────────────
   fastify.get("/api/config", async (_req, reply) => {
-    const env = readEnv();
+    const env = readEffectiveConfig();
     // Return config with secret redacted
     return reply.send({
       BOT_API_URL: env.BOT_API_URL || "",
       BOT_MODEL: env.BOT_MODEL || "",
-      BOT_API_KEY: env.BOT_API_KEY ? "••••••••" : "",
+      BOT_API_KEY: env.BOT_API_KEY ? REDACTED_SECRET : "",
       WIN98_LISTEN_PORT: env.WIN98_LISTEN_PORT || "9000",
       WIN98_LISTEN_HOST: env.WIN98_LISTEN_HOST || "0.0.0.0",
       HTTP_PORT: env.HTTP_PORT || "3000",
@@ -66,8 +101,9 @@ async function configRoutes(fastify, opts) {
       PHASE1_PG_PORT: env.PHASE1_PG_PORT || "5432",
       PHASE1_PG_DATABASE: env.PHASE1_PG_DATABASE || "win98botter",
       PHASE1_PG_USER: env.PHASE1_PG_USER || "win98botter",
-      PHASE1_PG_PASSWORD: env.PHASE1_PG_PASSWORD ? "••••••••" : "",
+      PHASE1_PG_PASSWORD: env.PHASE1_PG_PASSWORD ? REDACTED_SECRET : "",
       PHASE1_PG_SSL: env.PHASE1_PG_SSL || "0",
+      CONFIG_JSON_PATH,
     });
   });
 
@@ -108,17 +144,28 @@ async function configRoutes(fastify, opts) {
     async (request, reply) => {
       const body = request.body;
 
-      const existing = readEnv();
+      const existing = readEffectiveConfig();
 
       // Merge: keep existing API key if caller sends the redacted placeholder
       const newEnv = { ...existing };
       for (const [k, v] of Object.entries(body)) {
-        if (k === "BOT_API_KEY" && v === "••••••••") continue; // leave existing
-        if (k === "PHASE1_PG_PASSWORD" && v === "••••••••") continue;
+        if (
+          k === "BOT_API_KEY" &&
+          (v === REDACTED_SECRET || v === "••••••••")
+        ) {
+          continue;
+        }
+        if (
+          k === "PHASE1_PG_PASSWORD" &&
+          (v === REDACTED_SECRET || v === "••••••••")
+        ) {
+          continue;
+        }
         if (v !== "") newEnv[k] = v;
       }
 
       writeEnv(newEnv);
+      writePersistentConfig(newEnv);
 
       // Sync into process.env so new values are available immediately
       for (const [k, v] of Object.entries(newEnv)) process.env[k] = v;
@@ -131,7 +178,10 @@ async function configRoutes(fastify, opts) {
         opts.llm._anthropic = isAnthropic(newEnv.BOT_API_URL);
       }
 
-      fastify.log.info("Config updated via /api/config — saved to .env");
+      fastify.log.info(
+        { configPath: CONFIG_JSON_PATH },
+        "Config updated via /api/config — saved to .env and persistent JSON",
+      );
       return reply.send({
         success: true,
         restart_required: true,
@@ -160,12 +210,23 @@ async function configRoutes(fastify, opts) {
     },
     async (request, reply) => {
       const { BOT_API_URL, BOT_API_KEY = "", BOT_MODEL } = request.body;
+      const env = readEffectiveConfig();
+      const effectiveKey =
+        BOT_API_KEY &&
+        BOT_API_KEY !== REDACTED_SECRET &&
+        BOT_API_KEY !== "••••••••"
+          ? BOT_API_KEY
+          : env.BOT_API_KEY || "";
       fastify.log.info(
-        { url: BOT_API_URL, model: BOT_MODEL },
+        {
+          url: BOT_API_URL,
+          model: BOT_MODEL,
+          usingStoredKey: !BOT_API_KEY || BOT_API_KEY === REDACTED_SECRET,
+        },
         "LLM connection test started",
       );
       const LLMClient = require("../agent/llm.js");
-      const client = new LLMClient(BOT_API_URL, BOT_API_KEY, BOT_MODEL);
+      const client = new LLMClient(BOT_API_URL, effectiveKey, BOT_MODEL);
       try {
         await client.call(
           [{ role: "user", content: "ping" }],

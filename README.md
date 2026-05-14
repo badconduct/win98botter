@@ -14,7 +14,7 @@ This README reflects the current implemented state, not a future-only design dra
 
 ## Critical Build Requirement
 
-The `win98-mcp-agent` binary is currently version **0.10** and should be compiled with **Visual Studio 6 (VC6) on Windows 98 SE** for real target deployment.
+The `win98-mcp-agent` binary is currently version **0.13** and should be compiled with **Visual Studio 6 (VC6) on Windows 98 SE** for real target deployment.
 
 Do not treat modern toolchain builds (newer MSVC/MinGW) as production-equivalent for real Win98SE deployment. They may build, but can introduce runtime incompatibilities on target systems.
 
@@ -29,6 +29,15 @@ Before running or publishing the project, the expected environment is:
 - **Visual Studio 6** for the production Win98 agent build
 - **Optional Docker / Docker Compose** for running the relay and PostgreSQL stack together
 - **Optional PostgreSQL** only if you want the Phase 1 map cache enabled
+- **Optional GnuWin32 grep** if you want faster bulk text and log searches on the Win98 machine
+
+### Optional grep detection
+
+If `grep.exe` is installed, the Win98 agent can detect it locally during startup with **zero AI-token cost**.
+
+- Detection is done with normal Win32 path checks, not a model call
+- The agent checks the system PATH and common install locations such as C:\Program Files\GnuWin32\bin\grep.exe, the Win9x short-path form, and C:\GnuWin32\bin\grep.exe
+- If grep is not installed, the built-in `grep_file`, `find_files`, and recursive directory search still work normally
 
 ---
 
@@ -129,7 +138,7 @@ In practice, SQLite is the project’s day-to-day audit trail, while PostgreSQL 
 
 1. Start the relay server using either Docker Compose or local Node.js.
 2. Open the Setup or Settings screen and configure the model endpoint, relay ports, and optional PostgreSQL cache.
-3. Build the Win98 agent version **0.10** using **Visual Studio 6 on Windows 98 SE**.
+3. Build the Win98 agent version **0.13** using **Visual Studio 6 on Windows 98 SE**.
 4. Start the agent in foreground, service mode, or local CLI mode depending on your workflow.
 5. If you want visual capture, enable the screenshot permission in the agent permissions file and restart the agent.
 6. If you enable the PostgreSQL Phase 1 cache, confirm the DB connection values in Settings and restart the relay if needed.
@@ -224,7 +233,8 @@ win98botter/
 6. Exposed the optional PostgreSQL Phase 1 cache in the Settings UI.
 7. Added VB6 local supervisor controls for Start, Stop, Install, Uninstall, Hide, and View Log.
 8. Separated local user chat from web administrator chat at the session level.
-9. Bumped the Win98 agent version to **0.10**.
+9. Added cache-first file discovery with verified path reuse and better stale-entry handling.
+10. Bumped the Win98 agent version to **0.13**.
 
 ---
 

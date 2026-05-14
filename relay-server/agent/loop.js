@@ -19,6 +19,7 @@ const {
   buildSystemPrompt,
   buildCacheContextInjection,
 } = require("./context");
+const { buildPortfolioPlan } = require("./portfolio");
 const { schemaList, openaiSchemaList } = require("../win98/tools");
 const queries = require("../db/queries");
 
@@ -88,16 +89,22 @@ class AgentLoop {
     // Build the allowed tool list (filtered by permissions)
     const allSchemas = schemaList();
     const allowedSchemas = this.perms.filterSchemas(allSchemas);
+    const allowedToolNames = allowedSchemas.map((s) => s.name);
     const toolSchemas = isAnthropic
       ? allowedSchemas
-      : openaiSchemaList(allowedSchemas.map((s) => s.name));
+      : openaiSchemaList(allowedToolNames);
+
+    const portfolioPlan = buildPortfolioPlan(userMessage, allowedToolNames);
 
     const systemPrompt = buildSystemPrompt(
-      allowedSchemas.map((s) => s.name),
+      allowedToolNames,
       this.perms,
       this.win98.agentInfo,
       this.promptFlags,
-      { compact: this._shouldUseCompactPrompt() },
+      {
+        compact: this._shouldUseCompactPrompt(),
+        portfolioPlan,
+      },
     );
 
     // Load session history
@@ -109,12 +116,27 @@ class AgentLoop {
 
     // Inject per-query cache information
     const agentId = this.selectedAgentId || this.win98.agentId;
-    const cacheInjection = buildCacheContextInjection(agentId, userMessage);
-    const userMessageWithCache = cacheInjection
-      ? cacheInjection + "\n\n**Your request**: " + userMessage
-      : userMessage;
-
-    ctx.addUserMessage(userMessageWithCache);
+    const searchRequest = this._classifyAutosearchRequest(userMessage);
+    const directShortcut = this._classifyDirectToolPrompt(userMessage);
+    const cacheMatches = searchRequest.requiresSearch
+      ? queries.searchCachedPathsForQuery(agentId, userMessage, 8)
+      : [];
+    const cacheInjection = buildCacheContextInjection(
+      agentId,
+      userMessage,
+      cacheMatches,
+    );
+    const searchHint = this._buildSearchPreflightHint(
+      searchRequest,
+      allowedToolNames,
+      cacheMatches,
+    );
+    const userParts = [];
+    const portfolioHint = this._buildPortfolioExecutionHint(portfolioPlan);
+    if (portfolioHint) userParts.push(portfolioHint);
+    if (cacheInjection) userParts.push(cacheInjection);
+    if (searchHint) userParts.push(searchHint);
+    userParts.push("**Your request**: " + userMessage);
 
     // Save user message to DB
     queries.saveMessage(sessionId, "user", userMessage);
@@ -124,8 +146,79 @@ class AgentLoop {
     let totalTokens = 0;
     let finalResponse = "";
     let permissionRetryUsed = false;
+    let searchCorrectionCount = 0;
+    const toolsUsed = new Set();
 
-    const maxIterations = this._getMaxLoopIterations();
+    if (directShortcut) {
+      const shortcutResult = await this._runDirectToolShortcut(
+        sessionId,
+        directShortcut,
+      );
+      if (shortcutResult && shortcutResult.response) {
+        finalResponse = this._sanitizeUserFacingResponse(
+          shortcutResult.response,
+        );
+        queries.saveMessage(sessionId, "assistant", finalResponse);
+        this._loopInfo(
+          {
+            sessionId,
+            toolName: directShortcut.toolName,
+            toolCallCount: shortcutResult.toolCalls || 0,
+          },
+          "Agent loop returned direct shortcut response",
+        );
+        return {
+          response: finalResponse,
+          tool_calls_made: shortcutResult.toolCalls || 0,
+          llm_calls_made: 0,
+          tokens_used: 0,
+        };
+      }
+    }
+
+    const preflightSummary = await this._preflightCacheCandidates(
+      sessionId,
+      cacheMatches,
+      allowedToolNames,
+      userMessage,
+    );
+    if (preflightSummary) {
+      userParts.push(preflightSummary.note);
+      toolCallCount += preflightSummary.toolCalls;
+      for (const toolName of preflightSummary.toolsUsed) {
+        toolsUsed.add(toolName);
+      }
+
+      const verifiedCacheResponse = this._buildVerifiedSearchResponse(
+        userMessage,
+        searchRequest,
+        preflightSummary,
+      );
+      if (verifiedCacheResponse) {
+        finalResponse = this._sanitizeUserFacingResponse(verifiedCacheResponse);
+        queries.saveMessage(sessionId, "assistant", finalResponse);
+        this._loopInfo(
+          {
+            sessionId,
+            toolCallCount,
+            verifiedPaths: preflightSummary.verifiedPaths || [],
+          },
+          "Agent loop returned verified cache response",
+        );
+        return {
+          response: finalResponse,
+          tool_calls_made: toolCallCount,
+          llm_calls_made: 0,
+          tokens_used: 0,
+        };
+      }
+    }
+
+    const userMessageWithCache = userParts.join("\n\n");
+
+    ctx.addUserMessage(userMessageWithCache);
+
+    const maxIterations = this._getMaxLoopIterations(searchRequest);
     this._loopInfo(
       {
         sessionId,
@@ -203,6 +296,34 @@ class AgentLoop {
           );
           continue;
         }
+
+        if (
+          searchRequest.requiresSearch &&
+          !this._hasSufficientSearchEvidence(toolsUsed, cacheMatches)
+        ) {
+          searchCorrectionCount++;
+          if (iter < maxIterations - 1) {
+            this.log.warn(
+              {
+                sessionId,
+                response: llmResp.text,
+                toolsUsed: Array.from(toolsUsed),
+                queryType: searchRequest.type,
+                searchCorrectionCount,
+              },
+              "Search-style request answered without enough evidence; forcing tool-backed retry",
+            );
+            ctx.addUserMessage(
+              this._buildSearchCorrectionMessage(
+                searchRequest,
+                allowedToolNames,
+                cacheMatches,
+              ),
+            );
+            continue;
+          }
+        }
+
         finalResponse = llmResp.text;
         if (!finalResponse || !String(finalResponse).trim()) {
           this.log.warn(
@@ -261,6 +382,7 @@ class AgentLoop {
 
         toolResults.push({ id: tc.id, name: tc.name, content });
         toolCallCount++;
+        toolsUsed.add(tc.name);
       }
 
       ctx.addToolResults(toolResults);
@@ -273,6 +395,17 @@ class AgentLoop {
         "Tool batch completed",
       );
     }
+
+    if (!finalResponse || !String(finalResponse).trim()) {
+      this.log.warn(
+        { sessionId, llmCallCount, toolCallCount, maxIterations },
+        "Agent loop ended without a final response; using fallback summary",
+      );
+      finalResponse =
+        "I completed diagnostic steps but hit the current relay reasoning limit before writing a final summary. The checks did run. Please retry once for a concise summary, or narrow the request to a specific app, log, or symptom.";
+    }
+
+    finalResponse = this._sanitizeUserFacingResponse(finalResponse);
 
     // Save final assistant response
     queries.saveMessage(sessionId, "assistant", finalResponse);
@@ -457,23 +590,41 @@ class AgentLoop {
       const fileName = filePath.split(/[\\\/]/).pop();
 
       if (fileName && agentId) {
+        const isDirectory =
+          result.is_directory === true || result.is_directory === 1;
+
         if (result.exists) {
-          // File was found — record this location for future searches
-          queries.recordFileLocation(agentId, fileName, filePath);
-          // Also record the directory tree entry
-          queries.recordDirectoryTreeEntry(agentId, filePath, false);
-          this.log.debug(
-            { agentId, fileName, path: filePath },
-            "Recorded file location in cache",
-          );
+          if (isDirectory) {
+            queries.recordDirectoryTreeEntry(agentId, filePath, true, {
+              exists: true,
+            });
+            this.log.debug(
+              { agentId, path: filePath },
+              "Verified directory existence in cache",
+            );
+          } else {
+            // File was found — record this location for future searches
+            queries.recordFileLocation(agentId, fileName, filePath);
+            queries.recordDirectoryTreeEntry(agentId, filePath, false, {
+              exists: true,
+            });
+            this.log.debug(
+              { agentId, fileName, path: filePath },
+              "Recorded file location in cache",
+            );
+          }
         } else {
-          // File doesn't exist — mark all known locations as not found if this was a verification
-          queries.updateFileLocationVerification(
-            agentId,
-            fileName,
-            filePath,
-            false,
-          );
+          queries.updateDirectoryTreeVerification(agentId, filePath, false);
+
+          const knownPath = queries.getFileLocationByPath(agentId, filePath);
+          if (knownPath) {
+            queries.updateFileLocationVerification(
+              agentId,
+              fileName,
+              filePath,
+              false,
+            );
+          }
         }
       }
     }
@@ -483,30 +634,40 @@ class AgentLoop {
     // But we capture the result here for analysis
     if (
       name !== "read_file" &&
-      name === "list_directory" &&
+      (name === "list_directory" || name === "find_files") &&
       result &&
       Array.isArray(result.entries)
     ) {
-      // Record each discovered entry in the directory tree
       const agentId = this.selectedAgentId || this.win98.agentId;
       const dirPath = input.path;
-      if (agentId && dirPath && result.entries) {
-        for (const entry of result.entries) {
-          const entryName = String(entry.name || "");
-          const fullPath = /^[A-Za-z]:\\/.test(entryName)
-            ? entryName
-            : (dirPath.endsWith("\\") ? dirPath : dirPath + "\\") + entryName;
-          const typeStr = String(entry.type || "").toUpperCase();
-          const isDirectory =
-            typeStr === "DIR" ||
-            typeStr === "DIRECTORY" ||
-            typeStr === "<DIR>" ||
-            entry.is_dir === true;
-          queries.recordDirectoryTreeEntry(agentId, fullPath, isDirectory);
-        }
+      const broadPattern =
+        !input.pattern || input.pattern === "*" || input.pattern === "*.*";
+      const pathExists =
+        result.path_exists === true ||
+        result.path_exists === 1 ||
+        result.exists === true ||
+        result.exists === 1;
+      const isDirectory =
+        result.is_directory === true || result.is_directory === 1;
+      const verifiedDirExists =
+        (pathExists && isDirectory) || result.entries.length > 0;
+
+      if (agentId && dirPath) {
+        queries.reconcileDirectoryListing(agentId, dirPath, result.entries, {
+          authoritative:
+            name === "list_directory" && broadPattern && !result.truncated,
+          verifiedDirExists,
+        });
+
         this.log.debug(
-          { agentId, path: dirPath, entryCount: result.entries.length },
-          "Recorded directory tree entries",
+          {
+            agentId,
+            path: dirPath,
+            entryCount: result.entries.length,
+            tool: name,
+            verifiedDirExists,
+          },
+          "Recorded verified directory tree entries",
         );
       }
     }
@@ -827,6 +988,702 @@ class AgentLoop {
     }
   }
 
+  async _runDirectToolShortcut(sessionId, shortcut) {
+    if (!shortcut || !shortcut.toolName) return null;
+
+    if (shortcut.kind === "grep") {
+      return this._runGrepShortcut(sessionId, shortcut);
+    }
+
+    if (shortcut.kind === "disk") {
+      return this._runDiskShortcut(sessionId, shortcut);
+    }
+
+    const result = await this._executeToolCall(
+      {
+        id: `direct-${shortcut.kind || shortcut.toolName}`,
+        name: shortcut.toolName,
+        input: shortcut.input || {},
+      },
+      sessionId,
+    );
+
+    return {
+      response: this._formatDirectToolResponse(shortcut, result),
+      toolCalls: 1,
+    };
+  }
+
+  async _runGrepShortcut(sessionId, shortcut) {
+    const sc =
+      this.win98 && this.win98.agentInfo
+        ? this.win98.agentInfo.startupCheck || {}
+        : {};
+    const candidates = [
+      sc.grep_path,
+      "C:\\Program Files\\GnuWin32\\bin\\grep.exe",
+      "C:\\PROGRA~1\\GnuWin32\\bin\\grep.exe",
+    ].filter(Boolean);
+
+    let toolCalls = 0;
+    const seen = new Set();
+
+    for (const path of candidates) {
+      const key = String(path).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const result = await this._executeToolCall(
+        {
+          id: `direct-grep-${toolCalls + 1}`,
+          name: "file_exists",
+          input: { path },
+        },
+        sessionId,
+      );
+      toolCalls++;
+
+      if (result && result.exists) {
+        return {
+          response: `Yes. It is installed at ${path}.`,
+          toolCalls,
+        };
+      }
+    }
+
+    if (sc.grep_installed && sc.grep_path) {
+      return {
+        response: `Yes. It appears to be installed at ${sc.grep_path}.`,
+        toolCalls,
+      };
+    }
+
+    return {
+      response:
+        "I could not verify a grep.exe installation path on this machine.",
+      toolCalls,
+    };
+  }
+
+  async _runDiskShortcut(sessionId, shortcut) {
+    const drive = String(shortcut.input?.drive || "C:\\");
+    let toolCalls = 0;
+
+    const dirFallback = await this._tryDiskFreeFromDir(sessionId, drive);
+    toolCalls += dirFallback.toolCalls || 0;
+    if (Number.isFinite(dirFallback.freeBytes)) {
+      return {
+        response: `${drive.replace(/\\+$/, "").toUpperCase()} has about ${this._formatByteCount(dirFallback.freeBytes)} free.`,
+        toolCalls,
+      };
+    }
+
+    const result = await this._executeToolCall(
+      {
+        id: `direct-${shortcut.kind || shortcut.toolName}`,
+        name: shortcut.toolName,
+        input: shortcut.input || {},
+      },
+      sessionId,
+    );
+    toolCalls++;
+
+    return {
+      response: this._formatDirectToolResponse(shortcut, result),
+      toolCalls,
+    };
+  }
+
+  async _tryDiskFreeFromDir(sessionId, drive) {
+    const driveRoot = String(drive || "C:\\").replace(/\\*$/, "\\");
+    const driveLetter = /^[A-Z]:/i.test(driveRoot)
+      ? driveRoot[0].toUpperCase()
+      : "C";
+
+    let content = "";
+    let toolCalls = 0;
+
+    if (this.perms.isAllowed("write_and_run_bat")) {
+      const batResult = await this._executeToolCall(
+        {
+          id: `disk-bat-${driveLetter}`,
+          name: "write_and_run_bat",
+          input: {
+            cwd: "C:\\WIN98BOTTER",
+            content: `@echo off\r\ndir ${driveRoot}\r\n`,
+            timeout_ms: 15000,
+          },
+        },
+        sessionId,
+      );
+      toolCalls++;
+
+      if (batResult && !batResult.error && !batResult.permission_denied) {
+        content = `${batResult.stdout || ""}\n${batResult.stderr || ""}`;
+      }
+    }
+
+    if (!content && this.perms.isAllowed("run_command")) {
+      const cmdResult = await this._executeToolCall(
+        {
+          id: `disk-dir-${driveLetter}`,
+          name: "run_command",
+          input: {
+            command: `command.com /c dir ${driveRoot}`,
+            cwd: "C:\\WIN98BOTTER",
+            timeout_ms: 15000,
+          },
+        },
+        sessionId,
+      );
+      toolCalls++;
+
+      if (cmdResult && !cmdResult.error && !cmdResult.permission_denied) {
+        content = `${cmdResult.stdout || ""}\n${cmdResult.stderr || ""}`;
+      }
+    }
+
+    const match = String(content).match(/([\d,\.]+)\s+bytes free/i);
+    if (!match) {
+      return { toolCalls, freeBytes: null };
+    }
+
+    const numeric = Number(String(match[1]).replace(/[^\d]/g, ""));
+    return {
+      toolCalls,
+      freeBytes: Number.isFinite(numeric) ? numeric : null,
+    };
+  }
+
+  _looksLegacyCappedDiskResult(result) {
+    const totalMb = Number(result?.total_mb);
+    const freeMb = Number(result?.free_mb);
+    const usedMb = Number(result?.used_mb);
+    if (!Number.isFinite(totalMb) || !Number.isFinite(freeMb)) return false;
+    return (
+      totalMb <= 2300 &&
+      freeMb >= totalMb * 0.95 &&
+      (!Number.isFinite(usedMb) || usedMb <= 1)
+    );
+  }
+
+  _formatByteCount(bytes) {
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value < 0) return "unknown";
+    const gb = value / (1024 * 1024 * 1024);
+    const mb = value / (1024 * 1024);
+    if (gb >= 1) return `${gb.toFixed(gb >= 10 ? 1 : 2)} GB`;
+    return `${Math.round(mb)} MB`;
+  }
+
+  _formatDirectToolResponse(shortcut, result) {
+    if (!shortcut) return "";
+    if (!result) {
+      return "I could not retrieve that information just now.";
+    }
+    if (result.permission_denied) {
+      return result.message || "That tool is currently blocked by permissions.";
+    }
+    if (result.error) {
+      return `I couldn't retrieve that information: ${result.error}.`;
+    }
+
+    const collectNames = (items) =>
+      Array.isArray(items)
+        ? items
+            .map((entry) =>
+              entry && typeof entry.name === "string" ? entry.name.trim() : "",
+            )
+            .filter(Boolean)
+        : [];
+
+    if (shortcut.kind === "disk") {
+      const drive = String(result.drive || shortcut.input.drive || "C:\\")
+        .replace(/\\+$/, "")
+        .toUpperCase();
+      const freeMb = Number(result.free_mb);
+      const totalMb = Number(result.total_mb);
+      if (this._looksLegacyCappedDiskResult(result)) {
+        return `${drive} is being reported through a legacy Win98 disk API that is capping the volume at about 2 GB, so that number is not trustworthy on this machine.`;
+      }
+      if (Number.isFinite(freeMb) && Number.isFinite(totalMb)) {
+        const freeText = this._formatByteCount(freeMb * 1024 * 1024);
+        const totalText = this._formatByteCount(totalMb * 1024 * 1024);
+        return `${drive} has about ${freeText} free out of ${totalText} total.`;
+      }
+      if (Number.isFinite(freeMb)) {
+        const freeText = this._formatByteCount(freeMb * 1024 * 1024);
+        return `${drive} reports about ${freeText} free.`;
+      }
+      return `I checked ${drive}, but the free-space values were not available in the reply.`;
+    }
+
+    if (shortcut.kind === "clipboard") {
+      const text = typeof result.text === "string" ? result.text.trim() : "";
+      return text || "Clipboard is empty.";
+    }
+
+    if (shortcut.kind === "audio") {
+      const inputNames = collectNames(result.input_devices);
+      const outputNames = collectNames(result.output_devices);
+      if (!inputNames.length && !outputNames.length) {
+        return "No audio devices were reported.";
+      }
+      const parts = [];
+      if (inputNames.length)
+        parts.push(`Audio input: ${inputNames.join("; ")}`);
+      if (outputNames.length)
+        parts.push(`Audio output: ${outputNames.join("; ")}`);
+      return parts.join("\n");
+    }
+
+    if (shortcut.kind === "midi") {
+      const inputNames = collectNames(result.midi_input_devices);
+      const outputNames = collectNames(result.midi_output_devices);
+      if (!inputNames.length && !outputNames.length) {
+        return "No MIDI devices were reported.";
+      }
+      const parts = [];
+      if (inputNames.length) parts.push(`MIDI input: ${inputNames.join("; ")}`);
+      if (outputNames.length)
+        parts.push(`MIDI output: ${outputNames.join("; ")}`);
+      return parts.join("\n");
+    }
+
+    return "I retrieved the requested information.";
+  }
+
+  _classifyDirectToolPrompt(userMessage) {
+    const text = String(userMessage || "").trim();
+    const lower = text.toLowerCase();
+    if (!lower) return null;
+
+    const driveMatch = lower.match(/\b([a-z]):\b/i);
+    const drive = driveMatch ? `${driveMatch[1].toUpperCase()}:\\` : "C:\\";
+    const asksForNames = /\b(name|names|only|just|exact)\b/i.test(lower);
+
+    if (
+      /\bmidi\b/i.test(lower) &&
+      /\b(device|devices|name|names|installed|list|input|output)\b/i.test(lower)
+    ) {
+      return {
+        kind: "midi",
+        toolName: "get_midi_devices",
+        input: {},
+        asksForNames,
+      };
+    }
+
+    if (
+      !/\bmidi\b/i.test(lower) &&
+      /\b(audio|sound|wave)\b/i.test(lower) &&
+      /\b(device|devices|name|names|installed|list|input|output)\b/i.test(lower)
+    ) {
+      return {
+        kind: "audio",
+        toolName: "get_audio_devices",
+        input: {},
+        asksForNames,
+      };
+    }
+
+    if (
+      /\bclipboard\b/i.test(lower) &&
+      /\b(read|show|tell|what|contents?|text|current)\b/i.test(lower)
+    ) {
+      return {
+        kind: "clipboard",
+        toolName: "read_clipboard",
+        input: {},
+        asksForNames,
+      };
+    }
+
+    if (
+      /\bgrep\b/i.test(lower) &&
+      /\b(installed|where|path|present)\b/i.test(lower)
+    ) {
+      return {
+        kind: "grep",
+        toolName: "file_exists",
+        input: {},
+        asksForNames,
+      };
+    }
+
+    if (
+      /\b(free space|disk space|drive space|available space|space available|storage|drive size|disk size)\b/i.test(
+        lower,
+      ) ||
+      (/\bhow much\b/i.test(lower) &&
+        /\b(disk|space|free|storage)\b/i.test(lower)) ||
+      (/\b(39gb|gb|gigabytes?)\b/i.test(lower) &&
+        /\b(storage|disk|drive|free)\b/i.test(lower))
+    ) {
+      return {
+        kind: "disk",
+        toolName: "get_disk_info",
+        input: { drive },
+        asksForNames,
+      };
+    }
+
+    return null;
+  }
+
+  _classifyAutosearchRequest(userMessage) {
+    const text = String(userMessage || "").toLowerCase();
+    if (!text) return { requiresSearch: false, type: null };
+
+    const mentionsFileOrApp =
+      /\b(files?|folders?|directories?|documents?|pdfs?|app|apps|application|applications|tool|tools|exe|dll|ini|logs?|bat|sys|drv|permissions?)\b/i.test(
+        text,
+      ) || /[a-z0-9_-]+\.[a-z0-9]+/i.test(text);
+
+    const installIntent =
+      /\b(do we have|is .* installed|check if .* installed)\b/i.test(text);
+
+    const explicitLocationIntent =
+      /\b(where is|where are|located|location of|path to|what is the path|locate|search for|look for)\b/i.test(
+        text,
+      ) ||
+      installIntent ||
+      (/\bfind\b/i.test(text) && mentionsFileOrApp);
+
+    const discoveryIntent =
+      /\b(are there any|do we have any|show me any|list any|what .* files|which .* files|any .* pdfs?)\b/i.test(
+        text,
+      ) && mentionsFileOrApp;
+
+    const editIntent =
+      /\b(edit|modify|change|update|patch|rewrite|write|append|delete|remove|rename|move)\b/i.test(
+        text,
+      );
+
+    const diagnosticIntent =
+      /\b(crash|crashed|why did|why does|error|bug|broken|hang|hanging|freeze|frozen|slow|not work|won't start|cannot start)\b/i.test(
+        text,
+      );
+
+    if (
+      (explicitLocationIntent || discoveryIntent) &&
+      (mentionsFileOrApp || installIntent) &&
+      !editIntent
+    ) {
+      return {
+        requiresSearch: true,
+        type: explicitLocationIntent ? "locate-path" : "discover-files",
+      };
+    }
+
+    if (diagnosticIntent && !explicitLocationIntent) {
+      return { requiresSearch: false, type: null };
+    }
+
+    return { requiresSearch: false, type: null };
+  }
+
+  _buildSearchPreflightHint(searchRequest, allowedToolNames, cacheMatches) {
+    if (!searchRequest || !searchRequest.requiresSearch) return "";
+
+    const available = new Set(allowedToolNames || []);
+    const steps = [];
+    if (available.has("file_exists"))
+      steps.push("check the obvious or cached path");
+    if (available.has("list_directory"))
+      steps.push("inspect likely parent folders");
+    if (available.has("find_files"))
+      steps.push("run a focused wildcard search");
+    if (available.has("list_registry") || available.has("read_registry")) {
+      steps.push("inspect registry evidence for installed apps");
+    }
+
+    const hasCacheMatches =
+      Array.isArray(cacheMatches) && cacheMatches.length > 0;
+
+    return [
+      "System workflow for this request type: the user is asking you to locate a file, folder, or installed tool.",
+      hasCacheMatches
+        ? "The relay cache already has likely candidate paths. Verify those exact cached paths first before any broad live search."
+        : "Before giving a final answer, perform a bounded search without asking the user for more input first.",
+      `Search order: ${steps.join(", ") || "use the best available file and registry tools"}.`,
+      "Use Win98-aware locations such as C:\\WINDOWS, C:\\Program Files, C:\\My Documents, and short-path variants like C:\\PROGRA~1 when relevant.",
+      "Do not assume NT/XP-style folders such as C:\\Users or C:\\Documents and Settings exist on Win98 unless a tool confirms them.",
+      "If the request is about a topic such as Java PDFs, do not rely only on the topic word being in the filename. Broaden to the file type and likely document folders before concluding absent.",
+      "Only say the item is missing after the bounded search fails.",
+    ].join(" ");
+  }
+
+  _hasSufficientSearchEvidence(toolsUsed, cacheMatches) {
+    const used = toolsUsed instanceof Set ? toolsUsed : new Set();
+    const hasCacheMatches =
+      Array.isArray(cacheMatches) && cacheMatches.length > 0;
+
+    if (
+      hasCacheMatches &&
+      !used.has("file_exists") &&
+      !used.has("get_file_info")
+    ) {
+      return false;
+    }
+
+    let score = 0;
+    const weightedTools = [
+      "find_files",
+      "file_exists",
+      "list_directory",
+      "read_file",
+      "get_file_info",
+      "list_registry",
+      "read_registry",
+      "grep_file",
+    ];
+
+    for (const name of weightedTools) {
+      if (used.has(name)) score++;
+    }
+
+    return score >= 2;
+  }
+
+  async _preflightCacheCandidates(
+    sessionId,
+    cacheMatches,
+    allowedToolNames,
+    userMessage,
+  ) {
+    const available = new Set(allowedToolNames || []);
+    if (!Array.isArray(cacheMatches) || cacheMatches.length === 0) return null;
+    if (!available.has("file_exists")) return null;
+
+    const verified = [];
+    const missing = [];
+    const toolsUsed = new Set();
+    let toolCalls = 0;
+    const seen = new Set();
+
+    const rankedPaths = this._rankPathsForQuery(
+      userMessage,
+      cacheMatches.map((match) => String(match.discovered_path || "")),
+    );
+
+    for (const path of rankedPaths.slice(0, 8)) {
+      if (!path || seen.has(path.toLowerCase())) continue;
+      seen.add(path.toLowerCase());
+
+      const result = await this._executeToolCall(
+        {
+          id: `cache-preflight-${toolCalls + 1}`,
+          name: "file_exists",
+          input: { path },
+        },
+        sessionId,
+      );
+
+      toolCalls++;
+      toolsUsed.add("file_exists");
+
+      if (result && result.exists) verified.push(path);
+      else missing.push(path);
+    }
+
+    if (verified.length === 0 && missing.length === 0) return null;
+
+    const noteParts = [
+      "Relay cache preflight already ran before the live search.",
+    ];
+    if (verified.length > 0) {
+      noteParts.push(`Confirmed cached paths: ${verified.join("; ")}.`);
+    }
+    if (missing.length > 0) {
+      noteParts.push(`Cached paths now missing: ${missing.join("; ")}.`);
+    }
+    noteParts.push(
+      "Use the confirmed cache hits first. Only broaden to list_directory or find_files if needed.",
+    );
+
+    return {
+      toolCalls,
+      toolsUsed: Array.from(toolsUsed),
+      verifiedPaths: verified,
+      missingPaths: missing,
+      note: noteParts.join(" "),
+    };
+  }
+
+  _buildVerifiedSearchResponse(userMessage, searchRequest, preflightSummary) {
+    if (!searchRequest || !searchRequest.requiresSearch) return "";
+
+    const verifiedPaths = Array.isArray(preflightSummary?.verifiedPaths)
+      ? preflightSummary.verifiedPaths
+      : [];
+    if (verifiedPaths.length === 0) return "";
+
+    const scored = this._scorePathsForQuery(userMessage, verifiedPaths);
+    const topScore = scored.length > 0 ? scored[0].score : 0;
+    if (topScore <= 0) return "";
+
+    const topPaths = scored
+      .filter((item) => item.score === topScore)
+      .map((item) => item.path)
+      .slice(0, 3);
+
+    const text = String(userMessage || "").toLowerCase();
+
+    if (searchRequest.type === "locate-path") {
+      const first = topPaths[0];
+      if (/\binstalled\b|\bwhere\b|\bpath\b/.test(text)) {
+        return `Yes. It is installed at ${first}.`;
+      }
+      return `I found it at ${first}.`;
+    }
+
+    if (searchRequest.type === "discover-files") {
+      if (topPaths.length === 1) {
+        return `Yes. I found ${topPaths[0]}.`;
+      }
+      return `Yes. I found these matches:\n- ${topPaths.join("\n- ")}`;
+    }
+
+    return "";
+  }
+
+  _scorePathsForQuery(userMessage, paths) {
+    const terms = this._extractSearchTerms(userMessage);
+    const scored = Array.isArray(paths)
+      ? paths.map((path) => {
+          const lower = String(path || "").toLowerCase();
+          let score = 0;
+          for (const term of terms) {
+            if (lower.includes(term)) score += term.length > 3 ? 2 : 1;
+          }
+          return { path, score };
+        })
+      : [];
+
+    scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+    return scored;
+  }
+
+  _rankPathsForQuery(userMessage, paths) {
+    return this._scorePathsForQuery(userMessage, paths).map(
+      (item) => item.path,
+    );
+  }
+
+  _extractSearchTerms(userMessage) {
+    const stop = new Set([
+      "the",
+      "and",
+      "any",
+      "are",
+      "there",
+      "this",
+      "that",
+      "with",
+      "from",
+      "have",
+      "what",
+      "where",
+      "which",
+      "system",
+      "computer",
+      "installed",
+      "files",
+      "file",
+      "path",
+      "please",
+      "tell",
+      "show",
+      "look",
+      "find",
+    ]);
+
+    return (
+      String(userMessage || "")
+        .toLowerCase()
+        .match(/[a-z0-9]+/g)
+        ?.filter((term) => term.length >= 3 && !stop.has(term)) || []
+    );
+  }
+
+  _buildSearchCorrectionMessage(searchRequest, allowedToolNames, cacheMatches) {
+    const available = new Set(allowedToolNames || []);
+    const suggestions = [];
+
+    if (available.has("file_exists"))
+      suggestions.push("try an exact likely path");
+    if (available.has("list_directory"))
+      suggestions.push("list likely parent folders");
+    if (available.has("find_files"))
+      suggestions.push("use find_files with a focused wildcard");
+    if (available.has("list_registry") || available.has("read_registry")) {
+      suggestions.push("check uninstall or app-path registry keys");
+    }
+
+    const hasCacheMatches =
+      Array.isArray(cacheMatches) && cacheMatches.length > 0;
+
+    return [
+      "System correction: this request needs a tool-backed search before a final answer.",
+      `Detected request type: ${searchRequest.type || "locate-path"}.`,
+      `Do this now: ${suggestions.join(", ") || "use the available search tools"}.`,
+      hasCacheMatches
+        ? "Use the cached candidate paths first with file_exists or get_file_info. If a cached path fails, let the cache mark it missing and then broaden the search."
+        : "If one focused wildcard search returns zero results, broaden the search instead of concluding missing.",
+      "For Win98 document searches, check likely folders such as C:\\My Documents before trying NT/XP-only locations.",
+      "For topic requests such as Java PDFs, search the file type and likely document folders, not only the topic word in the filename.",
+      "Do not answer from assumption or after only one failed path check.",
+    ].join(" ");
+  }
+
+  _buildPortfolioExecutionHint(portfolioPlan) {
+    if (!portfolioPlan || !Array.isArray(portfolioPlan.asks)) return "";
+
+    const lines = [
+      `Planner detected ${portfolioPlan.askCount} ask(s) in this request.`,
+      `Primary portfolio: ${portfolioPlan.primaryLabel}.`,
+    ];
+
+    for (const ask of portfolioPlan.asks.slice(0, 6)) {
+      const tools = Array.isArray(ask.prioritizedTools)
+        ? ask.prioritizedTools.join(", ")
+        : "";
+      lines.push(
+        `Ask ${ask.id}: ${ask.label} — ${ask.text}${tools ? ` | prefer: ${tools}` : ""}`,
+      );
+    }
+
+    lines.push(
+      "Complete the asks in order unless a verified result makes a later step unnecessary. The portfolio priorities guide tool choice but do not limit allowed tools.",
+    );
+
+    return lines.join("\n");
+  }
+
+  _sanitizeUserFacingResponse(text) {
+    if (typeof text !== "string") return text;
+
+    let out = text.replace(/\r\n/g, "\n");
+
+    out = out.replace(/```[a-z0-9_-]*\n?/gi, "");
+    out = out.replace(/```/g, "");
+    out = out.replace(/<br\s*\/?>/gi, "\n");
+    out = out.replace(/<\/?(code|pre|strong|em|b|i|u)\b[^>]*>/gi, "");
+    out = out.replace(/<\/?p\b[^>]*>/gi, "\n");
+    out = out.replace(/<[^>]+>/g, "");
+    out = out.replace(/^\s{0,3}#{1,6}\s*/gm, "");
+    out = out.replace(/^\s*>\s?/gm, "");
+    out = out.replace(/\*\*(.*?)\*\*/g, "$1");
+    out = out.replace(/__(.*?)__/g, "$1");
+    out = out.replace(/`([^`]*)`/g, "$1");
+    out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+    out = out.replace(/^\s*[-*]\s+/gm, "- ");
+    out = out.replace(/\n{3,}/g, "\n\n");
+
+    return out.trim();
+  }
+
   _getPermissionContradictions(text) {
     if (!text || typeof text !== "string") return [];
 
@@ -888,15 +1745,22 @@ class AgentLoop {
     return localUrl || smallContextModel;
   }
 
-  _getMaxLoopIterations() {
+  _getMaxLoopIterations(searchRequest) {
     const envVal = parseInt(process.env.BOT_MAX_LOOP_ITERATIONS || "", 10);
     if (!Number.isNaN(envVal) && envVal > 0) return envVal;
 
     const model = String(this.llm.model || "").toLowerCase();
-    if (model.includes("gemini")) return 6;
-    if (model.includes("grok") || model.includes("gpt-oss")) return 6;
-    if (model.includes("gpt-oss") || model.includes("llama")) return 8;
-    return MAX_LOOP_ITERATIONS;
+    let limit = MAX_LOOP_ITERATIONS;
+
+    if (model.includes("grok") || model.includes("gpt-oss")) limit = 6;
+    else if (model.includes("llama")) limit = 8;
+    else if (model.includes("gemini")) limit = 15;
+
+    if (searchRequest && searchRequest.requiresSearch) {
+      limit = Math.max(limit, 10);
+    }
+
+    return limit;
   }
 
   _getHistoryWindow() {

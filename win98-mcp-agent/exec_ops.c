@@ -35,6 +35,33 @@ typedef struct {
 
 static AsyncJob g_async[MAX_ASYNC_COMMANDS];
 
+static int starts_with_nocase(const char *s, const char *prefix)
+{
+    int i;
+    if (!s || !prefix) return 0;
+    for (i = 0; prefix[i] != '\0'; i++) {
+        char a = s[i];
+        char b = prefix[i];
+        if (a == '\0') return 0;
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
+static void wrap_with_command_com(const char *cmd, char *out, int out_size)
+{
+    if (!cmd || !out || out_size <= 0) return;
+
+    if (starts_with_nocase(cmd, "command.com") || starts_with_nocase(cmd, "cmd.exe")) {
+        _snprintf(out, out_size, "%s", cmd);
+    } else {
+        _snprintf(out, out_size, "command.com /c %s", cmd);
+    }
+    out[out_size - 1] = '\0';
+}
+
 /* Run a command synchronously, capture up to OUTPUT_CAPTURE_MAX_BYTES.     */
 static cJSON *exec_capture(const char *cmd, const char *cwd, DWORD timeout_ms)
 {
@@ -179,6 +206,7 @@ cJSON *tool_run_command(cJSON *params)
     cJSON *j_cwd = cJSON_GetObjectItemCaseSensitive(params, "cwd");
     cJSON *j_to  = cJSON_GetObjectItemCaseSensitive(params, "timeout_ms");
     const char *cmd, *cwd;
+    char shell_cmd[32768];
     DWORD timeout_ms = DEFAULT_CMD_TIMEOUT_MS;
 
     if (!cJSON_IsString(j_cmd)) {
@@ -190,7 +218,8 @@ cJSON *tool_run_command(cJSON *params)
     cwd = cJSON_IsString(j_cwd) ? j_cwd->valuestring : NULL;
     if (cJSON_IsNumber(j_to)) timeout_ms = (DWORD)j_to->valuedouble;
 
-    return exec_capture(cmd, cwd, timeout_ms);
+    wrap_with_command_com(cmd, shell_cmd, sizeof(shell_cmd));
+    return exec_capture(shell_cmd, cwd, timeout_ms);
 }
 
 cJSON *tool_run_bat(cJSON *params)
@@ -214,7 +243,8 @@ cJSON *tool_run_bat(cJSON *params)
     cwd  = cJSON_IsString(j_cwd)  ? j_cwd->valuestring  : NULL;
     if (cJSON_IsNumber(j_to)) timeout_ms = (DWORD)j_to->valuedouble;
 
-    _snprintf(cmd, sizeof(cmd), "cmd.exe /c \"%s\" %s", path, args);
+    _snprintf(cmd, sizeof(cmd), "command.com /c \"%s\" %s", path, args);
+    cmd[sizeof(cmd) - 1] = '\0';
     return exec_capture(cmd, cwd, timeout_ms);
 }
 
@@ -270,7 +300,8 @@ cJSON *tool_write_and_run_bat(cJSON *params)
     WriteFile(hFile, content, (DWORD)strlen(content), &written, NULL);
     CloseHandle(hFile);
 
-    _snprintf(cmd, sizeof(cmd), "cmd.exe /c \"%s\"", bat_path);
+    _snprintf(cmd, sizeof(cmd), "command.com /c \"%s\"", bat_path);
+    cmd[sizeof(cmd) - 1] = '\0';
     exec_result = exec_capture(cmd, cwd, timeout_ms);
 
     if (exec_result) {
@@ -296,6 +327,7 @@ cJSON *tool_start_command(cJSON *params)
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
     char cmd_copy[32768];
+    char shell_cmd[32768];
     int slot;
     int i;
     cJSON *result;
@@ -329,12 +361,13 @@ cJSON *tool_start_command(cJSON *params)
         return result;
     }
 
-    if (strlen(cmd) >= sizeof(cmd_copy)) {
+    wrap_with_command_com(cmd, shell_cmd, sizeof(shell_cmd));
+    if (strlen(shell_cmd) >= sizeof(cmd_copy)) {
         result = cJSON_CreateObject();
         cJSON_AddStringToObject(result, "error", "command too long");
         return result;
     }
-    strcpy(cmd_copy, cmd);
+    strcpy(cmd_copy, shell_cmd);
 
     sa.nLength              = sizeof(sa);
     sa.lpSecurityDescriptor = NULL;

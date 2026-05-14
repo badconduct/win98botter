@@ -1,6 +1,7 @@
 "use strict";
 
 const { buildSystemPrompt } = require("../agent/context");
+const { buildPortfolioPlan } = require("../agent/portfolio");
 const { schemaList } = require("../win98/tools");
 const PermissionsManager = require("../agent/permissions");
 
@@ -40,12 +41,13 @@ async function systemPromptRoutes(fastify, opts) {
           type: "object",
           properties: {
             agent_id: { type: "string" },
+            request_text: { type: "string" },
           },
         },
       },
     },
     async (request, reply) => {
-      const { agent_id } = request.query;
+      const { agent_id, request_text } = request.query;
 
       let permissions;
       if (agent_id) {
@@ -65,16 +67,21 @@ async function systemPromptRoutes(fastify, opts) {
       const agentInfo = entry ? entry.connection.agentInfo : null;
 
       const promptFlags = normalizeFlags(entry ? entry.promptFlags : null);
+      const portfolioPlan = request_text
+        ? buildPortfolioPlan(request_text, allowedNames)
+        : null;
       const prompt = buildSystemPrompt(
         allowedNames,
         permissions,
         agentInfo,
         promptFlags,
+        { portfolioPlan },
       );
       return reply.send({
         prompt,
         flags: promptFlags,
         permissions: permissions.getAll(),
+        portfolioPlan,
       });
     },
   );
