@@ -9,7 +9,7 @@ RUN npm run build
 FROM node:24-alpine@sha256:50c8e8ca1d27439048670df5883f32d57cf81cff6233222c893fd0d9884cbd81 AS relay
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --strict-allow-scripts && npm cache clean --force
 # Explicit source selection: never copy local DBs, credentials, or staging.
 COPY index.js codex-bridge.js ./
 COPY agent/ ./agent/

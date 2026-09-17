@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Relay server for Win98 MCP bot — intelligence and orchestration layer",
   "type": "commonjs",
+  "allowScripts": {
+    "better-sqlite3@12.8.0": true
+  },
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
