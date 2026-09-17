@@ -16,6 +16,7 @@ class Win98Server {
     this.log = logger;
     this._server = null;
     this._onConnectionCb = null;
+    this._sockets = new Set();
   }
 
   /**
@@ -24,6 +25,8 @@ class Win98Server {
   listen(port, host) {
     return new Promise((resolve, reject) => {
       this._server = net.createServer((socket) => {
+        this._sockets.add(socket);
+        socket.once("close", () => this._sockets.delete(socket));
         const conn = new Win98Connection(socket, this.log);
         this.log.info(
           { addr: socket.remoteAddress },
@@ -48,7 +51,10 @@ class Win98Server {
 
   close() {
     return new Promise((resolve) => {
-      if (this._server) this._server.close(resolve);
+      if (this._server) {
+        this._server.close(resolve);
+        for (const socket of this._sockets) socket.destroy();
+      }
       else resolve();
     });
   }

@@ -11,6 +11,7 @@
 typedef struct {
     int read_file;
     int write_file;
+    int move_file;
     int delete_file;
     int list_processes;
     int kill_process;
@@ -26,6 +27,9 @@ typedef struct {
     int audio;
     int display;
     int screenshot;
+    int clipboard_read;
+    int window_read;
+    int network_read;
 } Permissions;
 
 void             permissions_load(const char *ini_path);

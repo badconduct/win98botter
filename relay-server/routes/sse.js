@@ -9,9 +9,11 @@
  * Query: ?session_id=s-1&message=...
  */
 async function sseRoutes(fastify, opts) {
-  const { llm, staging, registry, tokenBudget, phase1Store } = opts;
+  const { llm, registry, tokenBudget, phase1Store, state } = opts;
   const AgentLoop = require("../agent/loop");
+  const AgentRunQueue = require("../agent/run-queue");
   const queries = require("../db/queries");
+  const runQueue = opts.runQueue || new AgentRunQueue();
 
   fastify.get(
     "/sse",
@@ -41,6 +43,14 @@ async function sseRoutes(fastify, opts) {
         reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
       };
 
+      if (state && state.paused) {
+        send("error", {
+          message: "Agent execution is paused by the central controller",
+        });
+        reply.raw.end();
+        return;
+      }
+
       const entry = agent_id ? registry.get(agent_id) : registry.getDefault();
       if (!entry) {
         send("error", { message: "No Win98 agent connected" });
@@ -61,23 +71,41 @@ async function sseRoutes(fastify, opts) {
         selectedAgentId,
         connection.remoteAddress,
         llm.model,
-      );
-      const loop = new AgentLoop(
-        llm,
-        connection,
-        staging,
-        permissions,
-        fastify.log,
-        {
-          promptFlags: entry.promptFlags || null,
-          phase1Store,
-          selectedAgentId,
-        },
+        "administrator",
       );
 
       try {
         send("start", { session_id });
-        const result = await loop.run(session_id, message, tokenBudget);
+        const queueAgentId = entry.canonicalAgentId || selectedAgentId;
+        const result = await runQueue.run(queueAgentId, async () => {
+          if (state && state.paused) {
+            const err = new Error(
+              "Agent execution was paused while this request was queued",
+            );
+            err.statusCode = 423;
+            throw err;
+          }
+          if (!connection.connected) {
+            const err = new Error("Win98 agent disconnected while queued");
+            err.statusCode = 503;
+            throw err;
+          }
+
+          const loop = new AgentLoop(
+            llm,
+            connection,
+            staging,
+            permissions,
+            fastify.log,
+            {
+              promptFlags: entry.promptFlags || null,
+              customPrompt: entry.customPrompt || "",
+              phase1Store,
+              selectedAgentId,
+            },
+          );
+          return loop.run(session_id, message, tokenBudget);
+        });
         send("message", result);
         send("done", { session_id });
       } catch (err) {

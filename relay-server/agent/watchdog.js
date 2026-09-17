@@ -126,8 +126,32 @@ class Watchdog {
       const job = cron.schedule(check.schedule, async () => {
         this.log.info({ check: check.name }, "Running scheduled health check");
         try {
-          const loop = this.makeLoop();
-          const result = await loop.run(check.session_id, check.message, 80000);
+          if (this.config.isPaused && this.config.isPaused()) {
+            this.log.info(
+              { check: check.name },
+              "Skipping scheduled health check while execution is paused",
+            );
+            return;
+          }
+
+          const execute = async () => {
+            if (this.config.isPaused && this.config.isPaused()) {
+              throw new Error(
+                "Agent execution was paused while health check was queued",
+              );
+            }
+            if (!this.win98.connected) {
+              throw new Error(
+                "Win98 agent disconnected while health check was queued",
+              );
+            }
+            const loop = this.makeLoop();
+            return loop.run(check.session_id, check.message, 80000);
+          };
+          const result =
+            this.config.runQueue && this.config.agentId
+              ? await this.config.runQueue.run(this.config.agentId, execute)
+              : await execute();
           this.log.info(
             { check: check.name, response: result.response.slice(0, 200) },
             "Health check complete",

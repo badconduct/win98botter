@@ -2,7 +2,7 @@
 
 /**
  * POST /control
- * Body: { action: "pause" | "resume" | "disconnect" | "permissions" }
+ * Body: { action: "pause" | "resume" | "disconnect" | "permissions" | "reload_permissions" }
  *
  * pause/resume  — halt/resume agent loop processing
  * disconnect    — close the active Win98 TCP connection
@@ -21,7 +21,13 @@ async function controlRoutes(fastify, opts) {
           properties: {
             action: {
               type: "string",
-              enum: ["pause", "resume", "disconnect", "permissions"],
+              enum: [
+                "pause",
+                "resume",
+                "disconnect",
+                "permissions",
+                "reload_permissions",
+              ],
             },
             agent_id: { type: "string" },
             permissions: { type: "object" },
@@ -68,14 +74,43 @@ async function controlRoutes(fastify, opts) {
           if (win98 && win98.connected) {
             try {
               await win98.call("set_permissions", permissions.getAsToolLevel());
+              const listed = await win98.listTools();
+              if (win98.agentInfo) {
+                win98.agentInfo.permissions = permissions.getAsToolLevel();
+                win98.agentInfo.tools = listed?.tools || [];
+              }
             } catch (pushErr) {
-              fastify.log.warn({ err: pushErr }, "set_permissions push failed");
+              fastify.log.warn(
+                { err: pushErr },
+                "set_permissions push or capability refresh failed",
+              );
             }
           }
           return reply.send({
             success: true,
             permissions: permissions.getAll(),
           });
+
+        case "reload_permissions":
+          if (!win98 || !permissions) {
+            return reply.status(503).send({ error: "No agent connected" });
+          }
+          try {
+            const loaded = await win98.call("permissions/update", {});
+            permissions.update(loaded || {});
+            const listed = await win98.listTools();
+            if (win98.agentInfo) {
+              win98.agentInfo.permissions = loaded || {};
+              win98.agentInfo.tools = listed?.tools || [];
+            }
+            return reply.send({
+              success: true,
+              source: "Win98 permissions.ini",
+              permissions: permissions.getAll(),
+            });
+          } catch (err) {
+            return reply.status(500).send({ error: err.message });
+          }
 
         default:
           return reply.status(400).send({ error: "Unknown action" });

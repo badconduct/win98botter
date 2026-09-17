@@ -1,6 +1,7 @@
 "use strict";
 
 const { Pool } = require("pg");
+const { postgresConfig } = require("./postgres-config");
 
 function parseBool(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;
@@ -8,7 +9,7 @@ function parseBool(value, fallback) {
   return v === "1" || v === "true" || v === "yes" || v === "on";
 }
 
-function createPhase1Store(config, logger) {
+function createPhase1Store(config, logger, PoolClass = Pool) {
   const enabled = parseBool(config.phase1PgEnabled, false);
   if (!enabled) {
     return {
@@ -36,19 +37,18 @@ function createPhase1Store(config, logger) {
     };
   }
 
-  const pool = new Pool({
-    connectionString: config.phase1PgUrl || undefined,
-    host: config.phase1PgHost || undefined,
-    port: config.phase1PgPort ? Number(config.phase1PgPort) : undefined,
-    database: config.phase1PgDatabase || undefined,
-    user: config.phase1PgUser || undefined,
-    password: config.phase1PgPassword || undefined,
-    ssl: parseBool(config.phase1PgSsl, false)
-      ? { rejectUnauthorized: false }
-      : false,
-  });
+  const pool = new PoolClass(postgresConfig(config));
 
   async function init() {
+    if (config.phase1PgSchemaMode === "external") {
+      // Fail startup if migrations/permissions are missing. Never run DDL as
+      // the Dockernet runtime account or silently disable its map database.
+      await pool.query("SELECT id, agent_id, dir_path, name, entry_type, size_bytes, modified_at, observed_at, scan_duration_ms, source_tool FROM phase1_dir_entries LIMIT 0");
+      await pool.query("SELECT id, agent_id, file_path, line_start, line_end, byte_start, byte_end, is_partial, content, content_hash, observed_at, source_tool, session_id, duration_ms FROM phase1_file_reads LIMIT 0");
+      await pool.query("SELECT id, agent_id, key_path, value_name, value_type, value_data, observed_at, source_tool FROM phase1_registry_entries LIMIT 0");
+      logger.info("Phase 1 PostgreSQL externally managed schema verified");
+      return;
+    }
     await pool.query(`
       CREATE TABLE IF NOT EXISTS phase1_dir_entries (
         id BIGSERIAL PRIMARY KEY,

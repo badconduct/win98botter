@@ -1,11 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../api/index.js";
 
-const CUSTOM_PROMPT_KEY = "win98botter.customSystemPrompt";
-
 /**
  * SystemPrompt — shows the live server-generated system prompt for this agent,
- * plus an editable custom prefix that will be prepended on every chat message.
+ * plus a centrally stored per-agent instruction applied by the relay.
  */
 export default function SystemPrompt({ agent }) {
   const [serverPrompt, setServerPrompt] = useState("");
@@ -16,6 +14,8 @@ export default function SystemPrompt({ agent }) {
   const [saved, setSaved] = useState(false);
   const [flags, setFlags] = useState({});
   const [permissions, setPermissions] = useState({});
+  const [selfTest, setSelfTest] = useState(null);
+  const [selfTesting, setSelfTesting] = useState(false);
 
   const agentId = agent?.agentId;
 
@@ -29,6 +29,7 @@ export default function SystemPrompt({ agent }) {
         setServerPrompt(data?.prompt ?? "");
         setFlags(data?.flags ?? {});
         setPermissions(data?.permissions ?? {});
+        setCustomPrompt(data?.custom_prompt ?? "");
       })
       .catch(() => setServerPrompt("(failed to load)"))
       .finally(() => setLoading(false));
@@ -70,32 +71,78 @@ export default function SystemPrompt({ agent }) {
     }
   }
 
+  async function reloadPermissions() {
+    if (!agentId || agent?.online === false) return;
+    try {
+      const res = await api.reloadAgentPermissions(agentId);
+      setPermissions(res?.permissions ?? {});
+      const data = await api.getSystemPrompt(agentId);
+      setServerPrompt(data?.prompt ?? "");
+      setPermissions(data?.permissions ?? res?.permissions ?? {});
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1200);
+    } catch {
+      setSaved(false);
+    }
+  }
+
+  async function runSelfTest() {
+    if (!agentId || agent?.online === false || selfTesting) return;
+    setSelfTesting(true);
+    setSelfTest(null);
+    try {
+      setSelfTest(await api.runAgentSelfTest(agentId));
+    } catch (error) {
+      setSelfTest({ error: error.message });
+    } finally {
+      setSelfTesting(false);
+    }
+  }
+
   const PERMISSION_ORDER = [
     ["file_read", "file_read"],
     ["file_write", "file_write"],
+    ["file_move", "file_move"],
+    ["file_delete", "file_delete"],
     ["registry_read", "registry_read"],
     ["registry_write", "registry_write"],
     ["execute", "execute"],
+    ["process_list", "process_list"],
     ["process_kill", "process_kill"],
-    ["hardware_io", "hardware_io"],
+    ["hardware_read", "hardware_read"],
+    ["hardware_write", "hardware_write"],
+    ["vxd_load", "vxd_load"],
+    ["system_config", "system_config"],
     ["serial", "serial"],
     ["scheduler", "scheduler"],
+    ["audio", "audio"],
+    ["display", "display"],
     ["screenshot", "screenshot"],
+    ["clipboard_read", "clipboard_read"],
+    ["window_read", "window_read"],
+    ["network_read", "network_read"],
     ["system", "system"],
   ];
 
-  // Load saved custom prompt from localStorage
   useEffect(() => {
-    setCustomPrompt(localStorage.getItem(CUSTOM_PROMPT_KEY) ?? "");
     setEditingCustom(false);
     setSaved(false);
+    setSelfTest(null);
   }, [agentId]);
 
-  function saveCustom() {
-    localStorage.setItem(CUSTOM_PROMPT_KEY, customPrompt);
-    setSaved(true);
-    setEditingCustom(false);
-    setTimeout(() => setSaved(false), 2000);
+  async function saveCustom() {
+    if (!agentId) return;
+    try {
+      const res = await api.setCustomSystemPrompt(agentId, customPrompt);
+      setCustomPrompt(res?.custom_prompt ?? customPrompt);
+      const data = await api.getSystemPrompt(agentId);
+      setServerPrompt(data?.prompt ?? "");
+      setSaved(true);
+      setEditingCustom(false);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      setSaved(false);
+    }
   }
 
   const previewLines = 6;
@@ -157,10 +204,27 @@ export default function SystemPrompt({ agent }) {
         <span style={styles.badge}>
           {agent?.online === false ? "offline (read-only)" : "click to toggle"}
         </span>
+        <button
+          style={styles.btn}
+          onClick={reloadPermissions}
+          disabled={agent?.online === false}
+          title="Discard runtime overrides and reload C:\\WIN98BOTTER\\permissions.ini"
+        >
+          Reload INI
+        </button>
+        <button
+          style={{ ...styles.btn, marginLeft: 0 }}
+          onClick={runSelfTest}
+          disabled={agent?.online === false || selfTesting}
+          title="Run safe native probes directly; no LLM calls or tokens"
+        >
+          {selfTesting ? "Testing..." : "Self-test"}
+        </button>
       </div>
       <div style={styles.permissionsWrap}>
         {PERMISSION_ORDER.map(([key, label]) => {
           const enabled = permissions[key] !== false;
+          const immutable = key === "system";
           return (
             <button
               key={key}
@@ -168,13 +232,17 @@ export default function SystemPrompt({ agent }) {
               style={{
                 ...styles.permBtn,
                 ...(enabled ? styles.permBtnOn : styles.permBtnOff),
-                ...(agent?.online === false ? styles.permBtnDisabled : {}),
+                ...(agent?.online === false || immutable
+                  ? styles.permBtnDisabled
+                  : {}),
               }}
               onClick={() => togglePermission(key)}
-              disabled={agent?.online === false}
+              disabled={agent?.online === false || immutable}
               title={
                 agent?.online === false
                   ? "Agent offline: reconnect to change permissions"
+                  : immutable
+                    ? "Always-on read-only system inspection"
                   : `Toggle ${label}`
               }
             >
@@ -186,9 +254,37 @@ export default function SystemPrompt({ agent }) {
       </div>
 
       {/* ── User custom prefix (editable) ── */}
+      {selfTest && (
+        <div style={styles.selfTestWrap}>
+          {selfTest.error ? (
+            <span style={styles.selfTestError}>{selfTest.error}</span>
+          ) : (
+            <>
+              <span style={styles.selfTestTitle}>
+                Agent {selfTest.agent_version || "legacy"}: {selfTest.counts?.successful || 0}/
+                {selfTest.counts?.tested || 0} probes passed
+              </span>
+              <span style={styles.selfTestMeta}>
+                {selfTest.counts?.advertised || 0} advertised; {selfTest.counts?.relay_allowed || 0} allowed; {selfTest.counts?.blocked || 0} blocked; {selfTest.counts?.unsupported_by_agent || 0} upgrade-only; 0 tokens
+              </span>
+              {(selfTest.probes || []).some(
+                (probe) => probe.status !== "successful",
+              ) && (
+                <span style={styles.selfTestError}>
+                  {(selfTest.probes || [])
+                    .filter((probe) => probe.status !== "successful")
+                    .map((probe) => `${probe.tool}: ${probe.status}`)
+                    .join("; ")}
+                </span>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       <div style={styles.sectionHeader}>
         <span style={styles.title}>Custom Prefix</span>
-        <span style={styles.badge}>prepended to each message</span>
+        <span style={styles.badge}>central per-agent instruction</span>
         <div style={styles.headerActions}>
           {saved && <span style={styles.savedBadge}>Saved ✓</span>}
           {!editingCustom ? (
@@ -203,9 +299,10 @@ export default function SystemPrompt({ agent }) {
               <button
                 style={{ ...styles.btn, ...styles.btnCancel }}
                 onClick={() => {
-                  setCustomPrompt(
-                    localStorage.getItem(CUSTOM_PROMPT_KEY) ?? "",
-                  );
+                  api
+                    .getSystemPrompt(agentId)
+                    .then((data) => setCustomPrompt(data?.custom_prompt ?? ""))
+                    .catch(() => {});
                   setEditingCustom(false);
                 }}
               >
@@ -221,7 +318,7 @@ export default function SystemPrompt({ agent }) {
           style={styles.promptEditor}
           value={customPrompt}
           onChange={(e) => setCustomPrompt(e.target.value)}
-          placeholder="Optional instructions prepended before every message you send…"
+          placeholder="Optional central instructions applied to all chats for this agent…"
           spellCheck={false}
         />
       ) : (
@@ -339,6 +436,18 @@ const styles = {
     width: 8,
     display: "inline-block",
   },
+  selfTestWrap: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+    padding: "6px 10px",
+    borderBottom: "1px solid #1e1e30",
+    background: "#0b1110",
+    flexShrink: 0,
+  },
+  selfTestTitle: { color: "#8de3a3", fontSize: 11, fontWeight: 700 },
+  selfTestMeta: { color: "#73848a", fontSize: 10 },
+  selfTestError: { color: "#fca5a5", fontSize: 10 },
   headerActions: {
     display: "flex",
     alignItems: "center",

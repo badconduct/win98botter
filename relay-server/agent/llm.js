@@ -18,6 +18,27 @@
 
 const MAX_RETRIES = 4;
 const RETRY_DELAY_MS = 2000;
+const { CodexCliClient, isCodexCliUrl } = require("./codex-cli");
+const fs = require("node:fs");
+
+function configuredApiKey(fallback) {
+  const filename = process.env.BOT_API_KEY_FILE;
+  if (!filename) return fallback;
+  const value = fs.readFileSync(filename, "utf8").trim();
+  if (!value || /[\r\n]/.test(value)) {
+    throw new Error("BOT_API_KEY_FILE must contain one nonempty token");
+  }
+  return value;
+}
+
+function profileHeaders() {
+  const profile = process.env.BOT_AI_PROFILE;
+  if (!profile) return {};
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(profile)) {
+    throw new Error("BOT_AI_PROFILE is invalid");
+  }
+  return { "X-AI-Profile": profile };
+}
 
 function parseRetryDelaySeconds(val) {
   if (!val) return null;
@@ -59,6 +80,8 @@ function normalizeApiUrl(apiUrl) {
     String(process.env.BOT_LOCAL_LLM_BASE || "").trim() ||
     "http://host.docker.internal:11434";
   const raw = String(apiUrl || "").trim();
+
+  if (isCodexCliUrl(raw)) return raw;
 
   // Safe default for local Ollama OpenAI-compatible endpoint.
   if (!raw) return `${localBase.replace(/\/+$/, "")}/v1`;
@@ -206,6 +229,7 @@ async function callOpenAI(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
+      ...profileHeaders(),
     },
     body: JSON.stringify(body),
   });
@@ -270,10 +294,17 @@ async function callOpenAI(
 
 class LLMClient {
   constructor(apiUrl, apiKey, model) {
+    this.configure(apiUrl, apiKey, model);
+  }
+
+  configure(apiUrl, apiKey, model) {
     this.apiUrl = normalizeApiUrl(apiUrl);
-    this.apiKey = apiKey;
+    this.apiKey = configuredApiKey(apiKey);
     this.model = model;
     this._anthropic = isAnthropic(this.apiUrl);
+    this._codexCli = isCodexCliUrl(this.apiUrl)
+      ? new CodexCliClient({ model: this.model })
+      : null;
   }
 
   /**
@@ -287,7 +318,9 @@ class LLMClient {
     let attempt = 0;
     while (true) {
       try {
-        if (this._anthropic) {
+        if (this._codexCli) {
+          return await this._codexCli.call(messages, tools, systemPrompt);
+        } else if (this._anthropic) {
           return await callAnthropic(
             this.apiUrl,
             this.apiKey,
@@ -308,7 +341,19 @@ class LLMClient {
         }
       } catch (err) {
         attempt++;
-        if (attempt >= MAX_RETRIES) throw err;
+        const retryableStatus =
+          !err ||
+          err.status === undefined ||
+          err.status === 408 ||
+          err.status === 429 ||
+          err.status >= 500;
+        if (
+          attempt >= MAX_RETRIES ||
+          (err && err.retriable === false) ||
+          !retryableStatus
+        ) {
+          throw err;
+        }
 
         const retryMs =
           err && typeof err.retryAfterMs === "number" && err.retryAfterMs > 0

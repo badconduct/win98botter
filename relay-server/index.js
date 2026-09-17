@@ -15,7 +15,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const envPath = path.join(__dirname, ".env");
+const envPath = process.env.RELAY_ENV_PATH || path.join(__dirname, ".env");
 if (fs.existsSync(envPath)) {
   for (const line of fs.readFileSync(envPath, "utf8").split("\n")) {
     const trimmed = line.trim();
@@ -41,7 +41,7 @@ if (fs.existsSync(persistentConfigPath)) {
     const persisted = JSON.parse(fs.readFileSync(persistentConfigPath, "utf8"));
     if (persisted && typeof persisted === "object") {
       for (const [key, value] of Object.entries(persisted)) {
-        if (value !== undefined && value !== null && value !== "") {
+        if (value !== undefined && value !== null) {
           process.env[key] = String(value);
         }
       }
@@ -81,6 +81,9 @@ const config = {
   phase1PgUser: process.env.PHASE1_PG_USER || "win98botter",
   phase1PgPassword: process.env.PHASE1_PG_PASSWORD || "win98botter",
   phase1PgSsl: process.env.PHASE1_PG_SSL || "0",
+  phase1PgCaFile: process.env.PHASE1_PG_CA_FILE || "",
+  phase1PgPasswordFile: process.env.PHASE1_PG_PASSWORD_FILE || "",
+  phase1PgSchemaMode: process.env.PHASE1_PG_SCHEMA_MODE || "legacy",
 };
 
 // -- Dependencies --------------------------------------------------------------
@@ -97,6 +100,7 @@ const PermissionsManager = require("./agent/permissions");
 const StagingManager = require("./staging/manager");
 const Watchdog = require("./agent/watchdog");
 const AgentLoop = require("./agent/loop");
+const AgentRunQueue = require("./agent/run-queue");
 
 // -- Initialise database -------------------------------------------------------
 initDb(config.dbPath || null);
@@ -108,6 +112,7 @@ const win98Server = new Win98Server(console); // logger replaced after fastify i
 
 // -- LLM + Staging -------------------------------------------------------------
 const llm = new LLMClient(config.botApiUrl, config.botApiKey, config.botModel);
+const runQueue = new AgentRunQueue();
 
 // -- Shared state (pause/resume) -----------------------------------------------
 const state = { paused: false };
@@ -164,6 +169,13 @@ win98Server.onConnection(async (conn) => {
     // Persist agent identity to DB
     queries.upsertAgent(conn.agentId, conn.hostname, conn.remoteAddress);
   } catch (err) {
+    if (!conn.connected) {
+      fastify.log.warn(
+        { err, remoteAddress: conn.remoteAddress },
+        "Win98 disconnected during initialize; connection not registered",
+      );
+      return;
+    }
     agentId = conn.remoteAddress; // fallback
     conn.agentId = agentId;
     fastify.log.warn(
@@ -187,17 +199,30 @@ win98Server.onConnection(async (conn) => {
     permissions.update(conn.agentInfo.permissions);
   }
 
+  const savedPromptSettings = queries.getAgentPromptSettings(agentId);
+
   const staging = new StagingManager(config.stagingDir, conn, fastify.log);
 
   const watchdog = new Watchdog(
     conn,
-    () => new AgentLoop(llm, conn, staging, permissions, fastify.log),
+    () => {
+      const currentPromptSettings = queries.getAgentPromptSettings(agentId);
+      return new AgentLoop(llm, conn, staging, permissions, fastify.log, {
+        selectedAgentId: agentId,
+        promptFlags: currentPromptSettings.flags,
+        customPrompt: currentPromptSettings.customPrompt,
+        phase1Store,
+      });
+    },
     fastify.log,
     {
       alertWebhookUrl: config.alertWebhookUrl,
       heartbeatTimeoutSec: config.heartbeatTimeoutSec,
       watchdogIntervalSec: config.watchdogIntervalSec,
       healthchecksPath: config.healthchecksPath,
+      runQueue,
+      agentId,
+      isPaused: () => state.paused,
     },
   );
 
@@ -221,6 +246,8 @@ win98Server.onConnection(async (conn) => {
     permissions,
     staging,
     canonicalAgentId: agentId,
+    promptFlags: savedPromptSettings.flags,
+    customPrompt: savedPromptSettings.customPrompt,
   });
   watchdog.start();
 
@@ -274,6 +301,7 @@ const routeOpts = {
   registry,
   llm,
   state,
+  runQueue,
   tokenBudget: config.tokenBudget,
   phase1Store,
 };
@@ -289,6 +317,7 @@ fastify.register(require("./routes/control"), routeOpts);
 fastify.register(require("./routes/config"), routeOpts);
 fastify.register(require("./routes/logs"), routeOpts);
 fastify.register(require("./routes/agents"), routeOpts);
+fastify.register(require("./routes/self-test"), routeOpts);
 fastify.register(require("./routes/system-prompt"), routeOpts);
 fastify.register(require("./routes/map-cache"), routeOpts);
 fastify.register(require("./routes/file-activity"), routeOpts);

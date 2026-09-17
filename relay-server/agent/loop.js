@@ -18,14 +18,46 @@ const {
   ContextBuilder,
   buildSystemPrompt,
   buildCacheContextInjection,
+  shouldUseCompactPrompt,
 } = require("./context");
 const { buildPortfolioPlan } = require("./portfolio");
-const { schemaList, openaiSchemaList } = require("../win98/tools");
+const {
+  schemaList,
+  openaiSchemaList,
+  filterSchemasForAgent,
+  isToolAdvertised,
+} = require("../win98/tools");
 const queries = require("../db/queries");
 
 const MAX_LOOP_ITERATIONS = 20;
 const REMOTE_FILE_CHUNK_BYTES = 32768;
 const MAX_SCREENSHOT_CACHE_BYTES = 8 * 1024 * 1024;
+const SIDE_EFFECTING_TOOLS = new Set([
+  "write_file",
+  "write_file_binary",
+  "append_file",
+  "delete_file",
+  "copy_file",
+  "move_file",
+  "ini_write",
+  "ini_delete_key",
+  "write_registry",
+  "delete_registry",
+  "run_command",
+  "run_bat",
+  "write_and_run_bat",
+  "start_command",
+  "stop_command",
+  "kill_process",
+  "set_display_settings",
+  "set_desktop_appearance",
+  "send_window_message",
+  "schedule_task",
+  "delete_task",
+  "write_port",
+  "load_vxd",
+  "write_serial",
+]);
 
 const PERMISSION_PHRASES = {
   file_read: [
@@ -36,21 +68,60 @@ const PERMISSION_PHRASES = {
     "read file system",
   ],
   file_write: ["file_write", "file-system write", "filesystem write"],
+  file_delete: ["file_delete", "file delete", "delete permission"],
   registry_read: ["registry_read", "registry read"],
   registry_write: ["registry_write", "registry write"],
   execute: ["execute", "execution permission"],
+  process_list: ["process_list", "process list"],
   process_kill: ["process_kill", "process kill"],
-  hardware_io: ["hardware_io", "hardware io"],
+  hardware_read: ["hardware_read", "hardware read", "read port"],
+  hardware_write: ["hardware_write", "hardware write", "write port"],
+  vxd_load: ["vxd_load", "vxd load"],
+  system_config: ["system_config", "system config"],
   serial: ["serial"],
   scheduler: ["scheduler"],
+  audio: ["audio permission", "audio access"],
+  display: ["display permission", "display access"],
   screenshot: [
     "screenshot",
     "screenshot permission",
     "screenshot access",
     "visual capture",
   ],
+  clipboard_read: ["clipboard_read", "clipboard read"],
+  window_read: ["window_read", "window read", "window listing"],
+  network_read: ["network_read", "network read", "network diagnostics"],
+  file_move: ["file_move", "file move", "move file"],
   system: ["system permission", "system tools"],
 };
+
+function normalizeBoundedReadResult(result) {
+  let bytes;
+  try {
+    bytes = Buffer.from(result.data_b64, "base64");
+  } catch (_) {
+    return result;
+  }
+
+  let controls = 0;
+  for (const byte of bytes) {
+    if (byte === 0) {
+      return { ...result, encoding: "base64", binary_suspected: true };
+    }
+    if (byte < 9 || (byte > 13 && byte < 32)) controls++;
+  }
+
+  if (bytes.length > 0 && controls / bytes.length > 0.05) {
+    return { ...result, encoding: "base64", binary_suspected: true };
+  }
+
+  const normalized = { ...result };
+  delete normalized.data_b64;
+  normalized.content = bytes.toString("utf8");
+  normalized.encoding = "utf8";
+  normalized.binary_suspected = false;
+  return normalized;
+}
 
 class AgentLoop {
   constructor(
@@ -87,7 +158,10 @@ class AgentLoop {
     const effectiveBudget = this._getEffectiveTokenBudget(tokenBudget);
 
     // Build the allowed tool list (filtered by permissions)
-    const allSchemas = schemaList();
+    const allSchemas = filterSchemasForAgent(
+      schemaList(),
+      this.win98.agentInfo,
+    );
     const allowedSchemas = this.perms.filterSchemas(allSchemas);
     const allowedToolNames = allowedSchemas.map((s) => s.name);
     const toolSchemas = isAnthropic
@@ -104,6 +178,7 @@ class AgentLoop {
       {
         compact: this._shouldUseCompactPrompt(),
         portfolioPlan,
+        customPrompt: this.options.customPrompt || "",
       },
     );
 
@@ -148,6 +223,7 @@ class AgentLoop {
     let permissionRetryUsed = false;
     let searchCorrectionCount = 0;
     const toolsUsed = new Set();
+    const failedToolCalls = new Map();
 
     if (directShortcut) {
       const shortcutResult = await this._runDirectToolShortcut(
@@ -351,6 +427,7 @@ class AgentLoop {
 
       // ── Execute tool calls ────────────────────────────────────────────────
       const toolResults = [];
+      let repeatedFailure = null;
       this._loopInfo(
         {
           sessionId,
@@ -360,11 +437,28 @@ class AgentLoop {
         "Executing tool batch",
       );
 
-      // Run independent tool calls in parallel
-      const toolCallPromises = llmResp.tool_calls.map((tc) =>
-        this._executeToolCall(tc, sessionId),
-      );
-      const results = await Promise.allSettled(toolCallPromises);
+      // Read-only batches can run concurrently. Any batch containing a
+      // side effect stays ordered so a write/read or change/verify pair cannot
+      // race on the Win98 machine.
+      let results;
+      if (llmResp.tool_calls.some((tc) => SIDE_EFFECTING_TOOLS.has(tc.name))) {
+        results = [];
+        for (const tc of llmResp.tool_calls) {
+          try {
+            results.push({
+              status: "fulfilled",
+              value: await this._executeToolCall(tc, sessionId),
+            });
+          } catch (reason) {
+            results.push({ status: "rejected", reason });
+          }
+        }
+      } else {
+        const toolCallPromises = llmResp.tool_calls.map((tc) =>
+          this._executeToolCall(tc, sessionId),
+        );
+        results = await Promise.allSettled(toolCallPromises);
+      }
 
       for (let i = 0; i < llmResp.tool_calls.length; i++) {
         const tc = llmResp.tool_calls[i];
@@ -383,6 +477,25 @@ class AgentLoop {
         toolResults.push({ id: tc.id, name: tc.name, content });
         toolCallCount++;
         toolsUsed.add(tc.name);
+
+        const failureDetail =
+          res.status === "rejected"
+            ? res.reason && res.reason.message
+            : res.value && res.value.error;
+        const callSignature = `${tc.name}:${JSON.stringify(tc.input || {})}`;
+        if (failureDetail) {
+          const failureCount = (failedToolCalls.get(callSignature) || 0) + 1;
+          failedToolCalls.set(callSignature, failureCount);
+          if (failureCount >= 2) {
+            repeatedFailure = {
+              tool: tc.name,
+              detail: String(failureDetail),
+              count: failureCount,
+            };
+          }
+        } else {
+          failedToolCalls.delete(callSignature);
+        }
       }
 
       ctx.addToolResults(toolResults);
@@ -394,6 +507,15 @@ class AgentLoop {
         },
         "Tool batch completed",
       );
+
+      if (repeatedFailure) {
+        finalResponse = `I couldn't complete the request because ${repeatedFailure.tool} failed twice with the same relay error: ${repeatedFailure.detail}. I stopped instead of repeating the same call.`;
+        this.log.warn(
+          { sessionId, ...repeatedFailure },
+          "Stopping repeated failing tool call",
+        );
+        break;
+      }
     }
 
     if (!finalResponse || !String(finalResponse).trim()) {
@@ -451,6 +573,14 @@ class AgentLoop {
       };
     }
 
+    if (!isToolAdvertised(this.win98.agentInfo, name)) {
+      return {
+        unsupported_by_agent: true,
+        tool: name,
+        message: `Tool '${name}' is not implemented by the connected Win98 agent executable.`,
+      };
+    }
+
     // Check Win98 connectivity
     if (!this.win98.connected) {
       return { error: "Win98 agent is not connected. Cannot call tool." };
@@ -462,7 +592,118 @@ class AgentLoop {
     if (name === "read_file") {
       // The staging pipeline pulls, reassembles, and parses the file
       try {
-        const staged = await this.staging.stageAndParse(sessionId, input.path);
+        const agentId = this.selectedAgentId || this.win98.agentId;
+        const info = await this.win98.callTool("get_file_info", {
+          path: input.path,
+        });
+        const cachedRecord = agentId
+          ? queries.getFileLocationByPath(agentId, input.path)
+          : null;
+        const cachedContent = cachedRecord
+          ? queries.getLatestFullFileContent(cachedRecord.id)
+          : null;
+        const remoteSize = Number(info && (info.size_bytes ?? info.size));
+        const metadataIsCurrent =
+          info &&
+          !info.error &&
+          info.exists &&
+          cachedRecord &&
+          cachedRecord.exists_flag !== 0 &&
+          cachedRecord.is_text_file === 1 &&
+          cachedRecord.remote_modified &&
+          info.modified &&
+          cachedRecord.remote_modified === info.modified &&
+          Number(cachedRecord.file_size_bytes) === remoteSize &&
+          cachedContent &&
+          Number(cachedContent.bytes_read) >= remoteSize;
+        const remoteFingerprint = metadataIsCurrent
+          ? await this._readRemoteFingerprint(input.path)
+          : null;
+        const hashMatches =
+          !cachedRecord?.remote_content_hash ||
+          !remoteFingerprint ||
+          (String(cachedRecord.remote_hash_algorithm || "").toLowerCase() ===
+            remoteFingerprint.algorithm.toLowerCase() &&
+            String(cachedRecord.remote_content_hash).toUpperCase() ===
+              remoteFingerprint.hash.toUpperCase());
+        const cacheIsCurrent = metadataIsCurrent && hashMatches;
+
+        if (cacheIsCurrent) {
+          if (remoteFingerprint && !cachedRecord.remote_content_hash) {
+            queries.updateFileRemoteHash(
+              cachedRecord.id,
+              remoteFingerprint.algorithm,
+              remoteFingerprint.hash,
+            );
+          }
+          queries.updateFileLocationVerification(
+            agentId,
+            cachedRecord.file_name,
+            input.path,
+            true,
+          );
+          const cachedResult = {
+            win98_path: input.path,
+            staged_path: null,
+            file_size: remoteSize,
+            staged_bytes: Number(cachedContent.bytes_read),
+            truncated_at_bytes: null,
+            modified: info.modified,
+            mime_type: cachedRecord.mime_type || this._mimeTypeForPath(input.path),
+            is_text: true,
+            content: cachedContent.content,
+            parsed: { source: "relay_file_cache" },
+            cache_hit: true,
+            verified_live: true,
+            verification: remoteFingerprint
+              ? cachedRecord.remote_content_hash
+                ? "size+timestamp+crc32"
+                : "size+timestamp; crc32 baseline recorded"
+              : "size+timestamp",
+            remote_hash_algorithm:
+              remoteFingerprint?.algorithm ||
+              cachedRecord.remote_hash_algorithm ||
+              null,
+            remote_content_hash:
+              remoteFingerprint?.hash ||
+              cachedRecord.remote_content_hash ||
+              null,
+          };
+          const durMs = Date.now() - startMs;
+          queries.saveToolCall(
+            sessionId,
+            name,
+            JSON.stringify(input),
+            JSON.stringify(cachedResult),
+            durMs,
+          );
+          await this._capturePhase1FromToolResult(
+            name,
+            input,
+            cachedResult,
+            sessionId,
+            durMs,
+          );
+          return cachedResult;
+        }
+
+        if (cachedRecord && info && info.exists) {
+          queries.invalidateFileContentByPath(agentId, input.path, true);
+        }
+
+        const staged = await this.staging.stageAndParse(
+          sessionId,
+          input.path,
+          info,
+        );
+        const stagedFingerprint =
+          staged && !staged.error
+            ? await this._readRemoteFingerprint(input.path)
+            : null;
+        if (stagedFingerprint) {
+          staged.remote_hash_algorithm = stagedFingerprint.algorithm;
+          staged.remote_content_hash = stagedFingerprint.hash;
+        }
         const durMs = Date.now() - startMs;
         queries.saveToolCall(
           sessionId,
@@ -473,7 +714,6 @@ class AgentLoop {
         );
 
         // ── Store file content in database cache ──────────────────────────
-        const agentId = this.selectedAgentId || this.win98.agentId;
         if (agentId && staged && !staged.error) {
           try {
             const fallbackContent = JSON.stringify(staged.parsed || {}).slice(
@@ -500,6 +740,10 @@ class AgentLoop {
                 fileSizeBytes: staged.file_size || staged.staged_bytes || null,
                 mimeType: staged.mime_type || this._mimeTypeForPath(input.path),
                 isTextFile: staged.is_text !== false,
+                modified: staged.modified || null,
+                remoteHash: stagedFingerprint && stagedFingerprint.hash,
+                remoteHashAlgorithm:
+                  stagedFingerprint && stagedFingerprint.algorithm,
               },
             );
 
@@ -525,7 +769,20 @@ class AgentLoop {
         );
         return staged;
       } catch (err) {
-        return { error: err.message };
+        const durMs = Date.now() - startMs;
+        const failure = { error: err.message };
+        queries.saveToolCall(
+          sessionId,
+          name,
+          JSON.stringify(input),
+          JSON.stringify(failure),
+          durMs,
+        );
+        this.log.warn(
+          { err: err.message, sessionId, path: input && input.path },
+          "File staging failed",
+        );
+        return failure;
       }
     }
 
@@ -543,6 +800,14 @@ class AgentLoop {
         durMs,
       );
       return { error: err.message };
+    }
+
+    if (
+      (name === "read_file_range" || name === "tail_file") &&
+      result &&
+      typeof result.data_b64 === "string"
+    ) {
+      result = normalizeBoundedReadResult(result);
     }
 
     if (
@@ -574,6 +839,23 @@ class AgentLoop {
       JSON.stringify(result),
       durMs,
     );
+
+    if (
+      ["read_file_range", "tail_file", "get_file_hash"].includes(name) &&
+      input &&
+      input.path &&
+      result &&
+      !result.error
+    ) {
+      const agentId = this.selectedAgentId || this.win98.agentId;
+      const fileName = String(input.path).split(/[\\/]/).pop();
+      if (agentId && fileName) {
+        queries.recordFileLocation(agentId, fileName, input.path);
+        queries.recordDirectoryTreeEntry(agentId, input.path, false, {
+          exists: true,
+        });
+      }
+    }
 
     // ── File location cache: record file_exists discoveries ────────────────
     if (
@@ -629,6 +911,45 @@ class AgentLoop {
       }
     }
 
+    if (name === "get_file_info" && input && input.path && result) {
+      const agentId = this.selectedAgentId || this.win98.agentId;
+      const filePath = input.path;
+      const fileName = String(filePath).split(/[\\\/]/).pop();
+      if (agentId && fileName && !result.error) {
+        if (result.exists && !result.is_directory) {
+          const existing = queries.getFileLocationByPath(agentId, filePath);
+          if (
+            existing &&
+            existing.remote_modified &&
+            result.modified &&
+            (existing.remote_modified !== result.modified ||
+              Number(existing.file_size_bytes) !==
+                Number(result.size_bytes ?? result.size))
+          ) {
+            queries.invalidateFileContentByPath(agentId, filePath, true);
+          }
+          queries.recordFileLocation(agentId, fileName, filePath);
+          const record = queries.getFileLocationByPath(agentId, filePath);
+          if (record) {
+            queries.updateFileMetadata(
+              record.id,
+              record.mime_type || this._mimeTypeForPath(filePath),
+              record.is_text_file === 1 ||
+                this._mimeTypeForPath(filePath).startsWith("text/"),
+              Number(result.size_bytes ?? result.size ?? 0),
+              result.modified || null,
+            );
+          }
+          queries.recordDirectoryTreeEntry(agentId, filePath, false, {
+            exists: true,
+          });
+        } else if (!result.exists) {
+          queries.invalidateFileContentByPath(agentId, filePath, false);
+          queries.updateDirectoryTreeVerification(agentId, filePath, false);
+        }
+      }
+    }
+
     // ── File content caching: store read_file results ──────────────────────
     // Note: read_file has special handling above with staging pipeline
     // But we capture the result here for analysis
@@ -680,8 +1001,15 @@ class AgentLoop {
       durMs,
     );
 
+    if (this._toolSucceeded(result)) {
+      this._updateFileCacheAfterMutation(name, input);
+    }
+
     // ── Record file changes for undo support ──────────────────────────────
-    if (name === "write_file" || name === "ini_write") {
+    if (
+      this._toolSucceeded(result) &&
+      (name === "write_file" || name === "ini_write")
+    ) {
       queries.saveFileChange(
         sessionId,
         "write",
@@ -690,12 +1018,12 @@ class AgentLoop {
         result.previous_value || null,
         input.content || input.value || null,
       );
-    } else if (name === "delete_file") {
+    } else if (this._toolSucceeded(result) && name === "delete_file") {
       // Mark file as deleted in cache
       const agentId = this.selectedAgentId || this.win98.agentId;
       const filePath = input.path;
       const fileName = filePath.split(/[\\\/]/).pop();
-      if (agentId && fileName && result && !result.error) {
+      if (agentId && fileName) {
         queries.updateFileLocationVerification(
           agentId,
           fileName,
@@ -716,7 +1044,7 @@ class AgentLoop {
         null,
         null,
       );
-    } else if (name === "write_registry") {
+    } else if (this._toolSucceeded(result) && name === "write_registry") {
       queries.saveFileChange(
         sessionId,
         "registry_write",
@@ -728,6 +1056,65 @@ class AgentLoop {
     }
 
     return result;
+  }
+
+  _toolSucceeded(result) {
+    return !!(
+      result &&
+      !result.error &&
+      result.success !== false &&
+      result.success !== 0
+    );
+  }
+
+  _updateFileCacheAfterMutation(name, input) {
+    const agentId = this.selectedAgentId || this.win98.agentId;
+    if (!agentId || !input) return;
+
+    const dirtyExistingPath = (filePath) => {
+      if (!filePath) return;
+      const fileName = String(filePath).split(/[\\\/]/).pop();
+      if (!fileName) return;
+      queries.recordFileLocation(agentId, fileName, filePath);
+      queries.invalidateFileContentByPath(agentId, filePath, true);
+      queries.recordDirectoryTreeEntry(agentId, filePath, false, {
+        exists: true,
+      });
+    };
+
+    const markMissing = (filePath) => {
+      if (!filePath) return;
+      const fileName = String(filePath).split(/[\\\/]/).pop();
+      queries.invalidateFileContentByPath(agentId, filePath, false);
+      if (fileName) {
+        queries.updateFileLocationVerification(
+          agentId,
+          fileName,
+          filePath,
+          false,
+        );
+      }
+      queries.updateDirectoryTreeVerification(agentId, filePath, false);
+    };
+
+    if (
+      [
+        "write_file",
+        "write_file_binary",
+        "append_file",
+        "ini_write",
+        "ini_delete_key",
+      ].includes(name)
+    ) {
+      dirtyExistingPath(input.path);
+    } else if (name === "delete_file") {
+      markMissing(input.path);
+    } else if (name === "copy_file") {
+      dirtyExistingPath(input.dst);
+    } else if (name === "move_file") {
+      markMissing(input.src);
+      dirtyExistingPath(input.dst);
+    }
   }
 
   _mimeTypeForPath(filePath) {
@@ -801,7 +1188,15 @@ class AgentLoop {
       mimeType,
       isTextFile,
       fileSizeBytes,
+      snapshot.modified || null,
     );
+    if (snapshot.remoteHash) {
+      queries.updateFileRemoteHash(
+        fileRecord.id,
+        snapshot.remoteHashAlgorithm || "crc32",
+        snapshot.remoteHash,
+      );
+    }
     queries.recordDirectoryTreeEntry(agentId, filePath, false);
 
     return {
@@ -810,7 +1205,32 @@ class AgentLoop {
       is_text_file: isTextFile,
       bytes_stored: bytesStored,
       file_size_bytes: fileSizeBytes,
+      remote_hash_algorithm: snapshot.remoteHashAlgorithm || null,
+      remote_content_hash: snapshot.remoteHash || null,
     };
+  }
+
+  async _readRemoteFingerprint(filePath) {
+    if (!this.win98.agentInfo || !Array.isArray(this.win98.agentInfo.tools)) {
+      return null;
+    }
+    if (!isToolAdvertised(this.win98.agentInfo, "get_file_hash")) return null;
+    try {
+      const result = await this.win98.callTool("get_file_hash", {
+        path: filePath,
+      });
+      if (!result || result.error || !result.hash) return null;
+      return {
+        algorithm: String(result.algorithm || "crc32"),
+        hash: String(result.hash),
+      };
+    } catch (error) {
+      this.log.debug(
+        { path: filePath, error: error.message },
+        "Remote file fingerprint unavailable; using metadata verification",
+      );
+      return null;
+    }
   }
 
   async _cacheCapturedScreenshot(filePath) {
@@ -918,24 +1338,47 @@ class AgentLoop {
         });
       }
 
-      if (name === "read_file") {
-        const content = result
-          ? JSON.stringify(result).slice(0, 1024 * 64)
-          : null;
+      if (
+        name === "read_file" ||
+        name === "read_file_range" ||
+        name === "tail_file"
+      ) {
+        const content =
+          result && typeof result.content === "string"
+            ? result.content.slice(0, 1024 * 64)
+            : null;
+        const totalBytes = Number(
+          result && (result.file_size ?? result.total_size),
+        );
+        const storedBytes = Number(
+          result && (result.staged_bytes ?? result.length),
+        );
+        const byteStart = Number(
+          result && result.offset !== undefined
+            ? result.offset
+            : input.offset || 0,
+        );
         await this.phase1Store.saveFileReadCapture({
           agentId,
           filePath: input.path,
           line_start: null,
           line_end: null,
-          byte_start: input.offset || 0,
-          byte_end:
-            typeof input.offset === "number" && typeof input.length === "number"
-              ? input.offset + input.length
-              : null,
-          is_partial: true,
+          byte_start: byteStart,
+          byte_end: Number.isFinite(storedBytes)
+            ? byteStart + storedBytes
+            : null,
+          is_partial:
+            name !== "read_file" ||
+            !!(result && result.truncated_at_bytes) ||
+            (Number.isFinite(totalBytes) &&
+              Number.isFinite(storedBytes) &&
+              storedBytes < totalBytes),
           content,
-          content_hash: null,
-          source_tool: "read_file",
+          content_hash:
+            result && result.remote_content_hash
+              ? `${result.remote_hash_algorithm || "crc32"}:${result.remote_content_hash}`
+              : null,
+          source_tool: name,
           session_id: sessionId,
           duration_ms: durMs,
         });
@@ -1725,24 +2168,7 @@ class AgentLoop {
   }
 
   _shouldUseCompactPrompt() {
-    const url = String(this.llm.apiUrl || "").toLowerCase();
-    const model = String(this.llm.model || "").toLowerCase();
-
-    if (process.env.BOT_COMPACT_PROMPT === "1") return true;
-    if (process.env.BOT_COMPACT_PROMPT === "0") return false;
-
-    const localUrl =
-      url.includes("localhost") ||
-      url.includes("127.0.0.1") ||
-      url.includes("host.docker.internal");
-
-    const smallContextModel =
-      model.includes("gpt-oss") ||
-      model.includes("llama") ||
-      model.includes("mistral") ||
-      model.includes("qwen");
-
-    return localUrl || smallContextModel;
+    return shouldUseCompactPrompt(this.llm.apiUrl, this.llm.model);
   }
 
   _getMaxLoopIterations(searchRequest) {
@@ -1753,6 +2179,13 @@ class AgentLoop {
     let limit = MAX_LOOP_ITERATIONS;
 
     if (model.includes("grok") || model.includes("gpt-oss")) limit = 6;
+    else if (
+      String(this.llm.apiUrl || "").toLowerCase().startsWith("codex://") ||
+      String(this.llm.apiUrl || "")
+        .toLowerCase()
+        .startsWith("chatgpt-cli://")
+    )
+      limit = 10;
     else if (model.includes("llama")) limit = 8;
     else if (model.includes("gemini")) limit = 15;
 

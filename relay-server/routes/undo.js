@@ -2,6 +2,25 @@
 
 const queries = require("../db/queries");
 
+async function restoreBackupWithCopy(win98, backupPath, destinationPath) {
+  const result = await win98.callTool("copy_file", {
+    src: backupPath,
+    dst: destinationPath,
+  });
+  if (
+    !result ||
+    result.error ||
+    result.success === false ||
+    result.success === 0
+  ) {
+    const detail = result && (result.error || result.win32_error);
+    throw new Error(
+      `Backup restore copy failed${detail ? `: ${detail}` : ""}`,
+    );
+  }
+  return result;
+}
+
 /**
  * POST /undo
  * Body: { change_id: N }
@@ -34,7 +53,23 @@ async function undoRoutes(fastify, opts) {
         return reply.status(404).send({ error: "Change not found" });
       }
 
-      const entry = agent_id ? registry.get(agent_id) : registry.getDefault();
+      const requestedEntry = agent_id ? registry.get(agent_id) : null;
+      if (
+        requestedEntry &&
+        change.agent_id &&
+        requestedEntry.canonicalAgentId !== change.agent_id &&
+        agent_id !== change.agent_id
+      ) {
+        return reply.status(409).send({
+          error: "Change belongs to a different Win98 agent",
+        });
+      }
+
+      const entry =
+        requestedEntry ||
+        (change.agent_id
+          ? registry.getByCanonicalId(change.agent_id)
+          : registry.getDefault());
       const win98 = entry ? entry.connection : null;
 
       if (!win98 || !win98.connected) {
@@ -51,13 +86,21 @@ async function undoRoutes(fastify, opts) {
         }
 
         if (change.backup_path) {
-          // Restore from backup via Win98 tool
+          // The deployed Win98 agent exposes copy_file, not a dedicated
+          // restore_backup RPC. Copy the recorded snapshot back explicitly.
           try {
-            const ts = change.backup_path.split("\\").pop().replace(".bak", "");
-            await win98.callTool("restore_backup", {
-              path: change.win98_path,
-              timestamp: ts,
-            });
+            await restoreBackupWithCopy(
+              win98,
+              change.backup_path,
+              change.win98_path,
+            );
+            if (change.agent_id) {
+              queries.invalidateFileContentByPath(
+                change.agent_id,
+                change.win98_path,
+                true,
+              );
+            }
             return reply.send({
               success: true,
               restored_from: change.backup_path,
@@ -72,6 +115,13 @@ async function undoRoutes(fastify, opts) {
               path: change.win98_path,
               content: change.previous_value,
             });
+            if (change.agent_id) {
+              queries.invalidateFileContentByPath(
+                change.agent_id,
+                change.win98_path,
+                true,
+              );
+            }
             return reply.send({
               success: true,
               note: "Restored previous content",
@@ -79,6 +129,29 @@ async function undoRoutes(fastify, opts) {
           } catch (err) {
             return reply.status(500).send({ error: err.message });
           }
+        }
+      }
+
+      if (change.action === "delete" && change.backup_path) {
+        try {
+          await restoreBackupWithCopy(
+            win98,
+            change.backup_path,
+            change.win98_path,
+          );
+          if (change.agent_id) {
+            queries.invalidateFileContentByPath(
+              change.agent_id,
+              change.win98_path,
+              true,
+            );
+          }
+          return reply.send({
+            success: true,
+            restored_from: change.backup_path,
+          });
+        } catch (err) {
+          return reply.status(500).send({ error: err.message });
         }
       }
 
@@ -97,3 +170,4 @@ async function undoRoutes(fastify, opts) {
 }
 
 module.exports = undoRoutes;
+module.exports.restoreBackupWithCopy = restoreBackupWithCopy;

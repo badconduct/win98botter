@@ -9,7 +9,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const ENV_PATH = path.join(__dirname, "..", ".env");
+const ENV_PATH = process.env.RELAY_ENV_PATH || path.join(__dirname, "..", ".env");
 const CONFIG_JSON_PATH =
   process.env.CONFIG_JSON_PATH ||
   path.join(
@@ -19,12 +19,56 @@ const CONFIG_JSON_PATH =
     "relay-config.json",
   );
 
-const PROVIDERS = ["claude", "openai", "ollama"];
 const REDACTED_SECRET = "********";
+const CONFIG_KEYS = new Set([
+  "BOT_API_URL",
+  "BOT_API_KEY",
+  "BOT_MODEL",
+  "BOT_LOCAL_LLM_BASE",
+  "BOT_MAX_OUTPUT_TOKENS",
+  "BOT_LOW_RESOURCE",
+  "BOT_LOOP_TRACE",
+  "BOT_COMPACT_PROMPT",
+  "BOT_MAX_LOOP_ITERATIONS",
+  "BOT_HISTORY_WINDOW",
+  "BOT_CONTEXT_BUDGET",
+  "BOT_CODEX_COMMAND",
+  "BOT_CODEX_MODEL",
+  "BOT_CODEX_TIMEOUT_MS",
+  "BOT_CODEX_WORKDIR",
+  "CODEX_BRIDGE_HOST",
+  "CODEX_BRIDGE_PORT",
+  "CODEX_BRIDGE_TOKEN",
+  "WIN98_LISTEN_PORT",
+  "WIN98_LISTEN_HOST",
+  "HTTP_PORT",
+  "HTTP_HOST",
+  "STAGING_DIR",
+  "DB_PATH",
+  "LOG_LEVEL",
+  "SESSION_CONTEXT_TOKEN_BUDGET",
+  "ALERT_WEBHOOK_URL",
+  "HEARTBEAT_TIMEOUT_SEC",
+  "WATCHDOG_INTERVAL_SEC",
+  "HEALTHCHECKS_PATH",
+  "PHASE1_PG_ENABLED",
+  "PHASE1_PG_URL",
+  "PHASE1_PG_HOST",
+  "PHASE1_PG_PORT",
+  "PHASE1_PG_DATABASE",
+  "PHASE1_PG_USER",
+  "PHASE1_PG_PASSWORD",
+  "PHASE1_PG_SSL",
+]);
 
-/** True when the URL points at Anthropic's API. */
-function isAnthropic(url) {
-  return (url || "").includes("anthropic.com");
+function pickConfigValues(source) {
+  const result = {};
+  for (const key of CONFIG_KEYS) {
+    if (source[key] !== undefined && source[key] !== null) {
+      result[key] = String(source[key]);
+    }
+  }
+  return result;
 }
 
 /** Parse a .env file into a plain object. Returns {} if the file is absent. */
@@ -43,8 +87,11 @@ function readEnv() {
 
 /** Serialise a plain object to .env format. */
 function writeEnv(obj) {
-  const lines = Object.entries(obj).map(([k, v]) => `${k}=${v}`);
-  fs.writeFileSync(ENV_PATH, lines.join("\n") + "\n", "utf8");
+  const lines = Object.entries(pickConfigValues(obj)).map(([k, v]) =>
+    `${k}=${v.replace(/[\r\n]/g, "")}`,
+  );
+  fs.mkdirSync(path.dirname(ENV_PATH), { recursive: true });
+  fs.writeFileSync(ENV_PATH, lines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
 }
 
 /** Read durable JSON config persisted outside the container image. */
@@ -70,7 +117,11 @@ function writePersistentConfig(obj) {
 
 /** Current effective config: live environment, .env defaults, plus durable overrides. */
 function readEffectiveConfig() {
-  return { ...process.env, ...readEnv(), ...readPersistentConfig() };
+  return {
+    ...pickConfigValues(process.env),
+    ...pickConfigValues(readEnv()),
+    ...pickConfigValues(readPersistentConfig()),
+  };
 }
 
 async function configRoutes(fastify, opts) {
@@ -119,6 +170,7 @@ async function configRoutes(fastify, opts) {
             BOT_API_URL: { type: "string" },
             BOT_MODEL: { type: "string", minLength: 1 },
             BOT_API_KEY: { type: "string" },
+            CLEAR_BOT_API_KEY: { type: "boolean" },
             WIN98_LISTEN_PORT: { type: "string" },
             WIN98_LISTEN_HOST: { type: "string" },
             HTTP_PORT: { type: "string" },
@@ -143,12 +195,14 @@ async function configRoutes(fastify, opts) {
     },
     async (request, reply) => {
       const body = request.body;
+      const clearBotApiKey = body.CLEAR_BOT_API_KEY === true;
 
       const existing = readEffectiveConfig();
 
       // Merge: keep existing API key if caller sends the redacted placeholder
-      const newEnv = { ...existing };
+      const newEnv = pickConfigValues(existing);
       for (const [k, v] of Object.entries(body)) {
+        if (k === "CLEAR_BOT_API_KEY") continue;
         if (
           k === "BOT_API_KEY" &&
           (v === REDACTED_SECRET || v === "••••••••")
@@ -163,6 +217,7 @@ async function configRoutes(fastify, opts) {
         }
         if (v !== "") newEnv[k] = v;
       }
+      if (clearBotApiKey) newEnv.BOT_API_KEY = "";
 
       writeEnv(newEnv);
       writePersistentConfig(newEnv);
@@ -172,10 +227,11 @@ async function configRoutes(fastify, opts) {
 
       // Hot-reload the live LLM client — no restart required
       if (opts.llm) {
-        opts.llm.apiUrl = newEnv.BOT_API_URL || "";
-        opts.llm.apiKey = newEnv.BOT_API_KEY || "";
-        opts.llm.model = newEnv.BOT_MODEL || "";
-        opts.llm._anthropic = isAnthropic(newEnv.BOT_API_URL);
+        opts.llm.configure(
+          newEnv.BOT_API_URL || "",
+          newEnv.BOT_API_KEY || "",
+          newEnv.BOT_MODEL || "",
+        );
       }
 
       fastify.log.info(

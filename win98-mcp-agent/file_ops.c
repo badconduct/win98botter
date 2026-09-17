@@ -3,8 +3,8 @@
  *
  * Implements: read_file, write_file, write_file_binary, append_file,
  *             delete_file, copy_file, move_file, get_file_info,
- *             list_directory, find_files, grep_file, list_backups, restore_backup,
- *             get_history, file_exists
+ *             list_directory, find_files, grep_file, get_history, file_exists,
+ *             read_file_range, tail_file, get_file_hash
  *
  * Every destructive operation automatically backs up the original first.
  * Backup folder: C:\WIN98BOTTER\BACKUPS\<path_with_slashes_as_dirs>\<ts>.bak
@@ -347,6 +347,23 @@ static int b64_encode(const unsigned char *in, int in_len, char *out, int max_ou
     return olen;
 }
 
+/* Streaming CRC-32 (IEEE 802.3 polynomial). Used as a cache fingerprint, not
+ * as a cryptographic integrity primitive. Keeping this implementation local
+ * avoids depending on CryptoAPI providers that vary across Win98 installs. */
+static DWORD crc32_update(DWORD crc, const unsigned char *buf, DWORD len)
+{
+    DWORD i;
+    int bit;
+
+    for (i = 0; i < len; i++) {
+        crc ^= (DWORD)buf[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? ((crc >> 1) ^ 0xEDB88320UL) : (crc >> 1);
+        }
+    }
+    return crc;
+}
+
 /* ── Tool implementations ─────────────────────────────────────────────────── */
 
 cJSON *tool_read_file(cJSON *params)
@@ -357,6 +374,7 @@ cJSON *tool_read_file(cJSON *params)
     HANDLE hFile;
     DWORD offset = 0, length = READ_FILE_MAX_BYTES;
     DWORD file_size, bytes_read;
+    DWORD read_error;
     unsigned char *buf;
     char *b64;
     int b64_len;
@@ -380,6 +398,7 @@ cJSON *tool_read_file(cJSON *params)
     if (cJSON_IsNumber(j_offset)) offset = (DWORD)j_offset->valuedouble;
     if (cJSON_IsNumber(j_length)) {
         length = (DWORD)j_length->valuedouble;
+        if (length == 0) length = 1;
         if (length > READ_FILE_MAX_BYTES) length = READ_FILE_MAX_BYTES;
     }
 
@@ -422,7 +441,16 @@ cJSON *tool_read_file(cJSON *params)
     buf = (unsigned char *)malloc(length);
     if (!buf) { CloseHandle(hFile); return NULL; }
 
-    ReadFile(hFile, buf, length, &bytes_read, NULL);
+    bytes_read = 0;
+    if (!ReadFile(hFile, buf, length, &bytes_read, NULL)) {
+        read_error = GetLastError();
+        CloseHandle(hFile);
+        free(buf);
+        result = cJSON_CreateObject();
+        cJSON_AddStringToObject(result, "error", "read_failed");
+        cJSON_AddNumberToObject(result, "win32_error", (double)read_error);
+        return result;
+    }
     CloseHandle(hFile);
 
     /* Base64 encode */
@@ -441,6 +469,164 @@ cJSON *tool_read_file(cJSON *params)
     cJSON_AddBoolToObject(result, "eof",
                           (offset + bytes_read >= file_size) ? 1 : 0);
     free(b64);
+    return result;
+}
+
+cJSON *tool_read_file_range(cJSON *params)
+{
+    return tool_read_file(params);
+}
+
+cJSON *tool_tail_file(cJSON *params)
+{
+    cJSON *j_path;
+    cJSON *j_length;
+    cJSON *read_params;
+    cJSON *result;
+    HANDLE hFile;
+    DWORD file_size;
+    DWORD length;
+    DWORD offset;
+
+    j_path = cJSON_GetObjectItemCaseSensitive(params, "path");
+    j_length = cJSON_GetObjectItemCaseSensitive(params, "length");
+    if (!cJSON_IsString(j_path)) {
+        result = cJSON_CreateObject();
+        cJSON_AddStringToObject(result, "error", "path required");
+        return result;
+    }
+
+    length = 8192;
+    if (cJSON_IsNumber(j_length) && j_length->valuedouble > 0) {
+        length = (DWORD)j_length->valuedouble;
+    }
+    if (length > READ_FILE_MAX_BYTES) length = READ_FILE_MAX_BYTES;
+
+    hFile = CreateFileA(j_path->valuestring, GENERIC_READ,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        result = cJSON_CreateObject();
+        cJSON_AddStringToObject(result, "error", "cannot_open_file");
+        cJSON_AddNumberToObject(result, "win32_error", (double)GetLastError());
+        return result;
+    }
+
+    file_size = GetFileSize(hFile, NULL);
+    CloseHandle(hFile);
+    if (file_size == INVALID_FILE_SIZE) {
+        result = cJSON_CreateObject();
+        cJSON_AddStringToObject(result, "error", "cannot_get_size");
+        return result;
+    }
+
+    offset = (file_size > length) ? (file_size - length) : 0;
+    read_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(read_params, "path", j_path->valuestring);
+    cJSON_AddNumberToObject(read_params, "offset", (double)offset);
+    cJSON_AddNumberToObject(read_params, "length", (double)length);
+    result = tool_read_file(read_params);
+    cJSON_Delete(read_params);
+    if (result && cJSON_IsObject(result)) {
+        cJSON_AddBoolToObject(result, "tail", 1);
+    }
+    return result;
+}
+
+cJSON *tool_get_file_hash(cJSON *params)
+{
+    cJSON *j_path;
+    cJSON *result;
+    const char *path_raw;
+    char path[MAX_PATH_BYTES];
+    char hash_hex[16];
+    HANDLE hFile;
+    unsigned char *buf;
+    DWORD bytes_read;
+    DWORD total_read;
+    DWORD file_size;
+    DWORD crc;
+    DWORD read_error;
+    BOOL ok;
+
+    j_path = cJSON_GetObjectItemCaseSensitive(params, "path");
+    if (!cJSON_IsString(j_path)) {
+        result = cJSON_CreateObject();
+        cJSON_AddStringToObject(result, "error", "path required");
+        return result;
+    }
+
+    path_raw = j_path->valuestring;
+    if (strlen(path_raw) >= MAX_PATH_BYTES) {
+        result = cJSON_CreateObject();
+        cJSON_AddStringToObject(result, "error", "path too long");
+        return result;
+    }
+    strcpy(path, path_raw);
+    normalise_path(path);
+
+    hFile = CreateFileA(path, GENERIC_READ,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        result = cJSON_CreateObject();
+        cJSON_AddStringToObject(result, "error", "cannot_open_file");
+        cJSON_AddNumberToObject(result, "win32_error", (double)GetLastError());
+        return result;
+    }
+
+    file_size = GetFileSize(hFile, NULL);
+    if (file_size == INVALID_FILE_SIZE) {
+        CloseHandle(hFile);
+        result = cJSON_CreateObject();
+        cJSON_AddStringToObject(result, "error", "cannot_get_size");
+        return result;
+    }
+
+    buf = (unsigned char *)malloc(32768);
+    if (!buf) {
+        CloseHandle(hFile);
+        return NULL;
+    }
+
+    crc = 0xFFFFFFFFUL;
+    total_read = 0;
+    ok = TRUE;
+    read_error = ERROR_SUCCESS;
+    for (;;) {
+        bytes_read = 0;
+        if (!ReadFile(hFile, buf, 32768, &bytes_read, NULL)) {
+            read_error = GetLastError();
+            ok = FALSE;
+            break;
+        }
+        if (bytes_read == 0) break;
+        crc = crc32_update(crc, buf, bytes_read);
+        total_read += bytes_read;
+    }
+    free(buf);
+    CloseHandle(hFile);
+
+    if (!ok) {
+        result = cJSON_CreateObject();
+        cJSON_AddStringToObject(result, "error", "read_failed");
+        cJSON_AddNumberToObject(result, "win32_error", (double)read_error);
+        return result;
+    }
+
+    crc ^= 0xFFFFFFFFUL;
+    _snprintf(hash_hex, sizeof(hash_hex), "%08lX", (unsigned long)crc);
+    hash_hex[sizeof(hash_hex) - 1] = '\0';
+
+    result = cJSON_CreateObject();
+    cJSON_AddStringToObject(result, "path", path);
+    cJSON_AddStringToObject(result, "algorithm", "crc32");
+    cJSON_AddStringToObject(result, "hash", hash_hex);
+    cJSON_AddNumberToObject(result, "bytes_hashed", (double)total_read);
+    cJSON_AddNumberToObject(result, "file_size", (double)file_size);
+    cJSON_AddBoolToObject(result, "full_file", total_read == file_size ? 1 : 0);
+    cJSON_AddStringToObject(result, "security_note",
+                            "CRC32 is for change detection, not security verification");
     return result;
 }
 

@@ -1,0 +1,31 @@
+# Shared-gateway variant: retain the relay/UI, omit the local Codex CLI.
+FROM node:24.14.1-alpine3.23@sha256:8510330d3eb72c804231a834b1a8ebb55cb3796c3e4431297a24d246b8add4d5 AS ui-builder
+WORKDIR /build/ui
+COPY ui/package*.json ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
+FROM node:24.14.1-alpine3.23@sha256:8510330d3eb72c804231a834b1a8ebb55cb3796c3e4431297a24d246b8add4d5 AS relay
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+# Explicit source selection: never copy local DBs, credentials, or staging.
+COPY index.js codex-bridge.js ./
+COPY agent/ ./agent/
+COPY db/ ./db/
+COPY routes/ ./routes/
+COPY staging/ ./staging/
+COPY win98/ ./win98/
+COPY --from=ui-builder /build/public ./public/
+RUN mkdir -p /data/staging && chown -R node:node /data
+USER node
+ENV NODE_ENV=production \
+    DB_PATH=/data/relay.db \
+    CONFIG_JSON_PATH=/data/relay-config.json \
+    RELAY_ENV_PATH=/data/relay.env \
+    STAGING_DIR=/data/staging \
+    PHASE1_PG_ENABLED=0 \
+    BOT_MODEL=default
+EXPOSE 3000 9000
+CMD ["node", "index.js"]

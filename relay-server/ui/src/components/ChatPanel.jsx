@@ -66,11 +66,8 @@ export default function ChatPanel({ agent }) {
     setError("");
     setInput("");
     try {
-      const customPrefix =
-        localStorage.getItem("win98botter.customSystemPrompt") ?? "";
-      const message = customPrefix ? `${customPrefix}\n\n${text}` : text;
       await api.sendChat({
-        message,
+        message: text,
         agent_id: agentId,
         source: CHAT_SOURCE,
       });

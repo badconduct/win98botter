@@ -1,0 +1,96 @@
+---
+name: Validate and publish relay
+'on':
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: relay-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      image_id: ${{ steps.image.outputs.id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install reviewed secret scanner
+        run: bash scripts/install-gitleaks.sh "${RUNNER_TEMP}/gitleaks"
+      - name: Scan files and history
+        run: |
+          "${RUNNER_TEMP}/gitleaks/gitleaks" dir --no-banner --redact .
+          "${RUNNER_TEMP}/gitleaks/gitleaks" git --no-banner --redact .
+      - name: Validate and build the Linux image
+        id: image
+        run: |
+          git diff --check
+          docker build --pull --platform linux/amd64 -f relay-server/Dockerfile.gateway -t win98botter:ci relay-server
+          printf 'id=%s\n' "$(docker image inspect win98botter:ci --format '{{.Id}}')" >> "$GITHUB_OUTPUT"
+      - name: Run relay and native-contract tests in Linux
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=64m \
+            --mount "type=bind,src=${PWD}/relay-server/tests,dst=/app/tests,readonly" \
+            --mount "type=bind,src=${PWD}/win98-mcp-agent,dst=/win98-mcp-agent,readonly" \
+            --mount "type=bind,src=${PWD}/vb6-gui,dst=/vb6-gui,readonly" \
+            win98botter:ci npm test
+      - name: Exercise actual migrations and database runtime
+        run: node scripts/test-postgresql.cjs win98botter:ci
+      - name: Exercise hardened relay and persistent SQLite
+        run: node scripts/test-container.cjs win98botter:ci
+      - name: Scan fixable high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: win98botter:ci
+          version: v0.74.0
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+      - name: Export exact tested image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker save win98botter:ci --output "${RUNNER_TEMP}/relay.tar"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: tested-relay
+          path: ${{ runner.temp }}/relay.tar
+          retention-days: 1
+          if-no-files-found: error
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: tested-relay
+          path: ${{ runner.temp }}/image
+      - name: Publish tested image without rebuilding
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+          EXPECTED_IMAGE_ID: ${{ needs.validate.outputs.image_id }}
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-auth
+        run: |
+          set -euo pipefail
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          docker load --input "${RUNNER_TEMP}/image/relay.tar"
+          test "$(docker image inspect win98botter:ci --format '{{.Id}}')" = "$EXPECTED_IMAGE_ID"
+          image="ghcr.io/${REPOSITORY,,}"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          docker tag win98botter:ci "${image}:sha-${SOURCE_SHA}"
+          docker push "${image}:sha-${SOURCE_SHA}"
+          docker image inspect "${image}:sha-${SOURCE_SHA}" --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"
+          printf '\nSource: %s. Merge publishes; it does not deploy.\n' "$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"

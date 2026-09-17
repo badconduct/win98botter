@@ -2,6 +2,7 @@
 
 const queries = require("../db/queries");
 const AgentLoop = require("../agent/loop");
+const AgentRunQueue = require("../agent/run-queue");
 
 /**
  * POST /chat
@@ -20,7 +21,8 @@ function normalizeSource(source) {
 }
 
 async function chatRoutes(fastify, opts) {
-  const { llm, staging, registry, tokenBudget, phase1Store } = opts;
+  const { llm, staging, registry, tokenBudget, phase1Store, state } = opts;
+  const runQueue = opts.runQueue || new AgentRunQueue();
 
   fastify.post(
     "/chat",
@@ -41,6 +43,12 @@ async function chatRoutes(fastify, opts) {
     },
     async (request, reply) => {
       try {
+        if (state && state.paused) {
+          return reply.status(423).send({
+            error: "Agent execution is paused by the central controller",
+          });
+        }
+
         let { session_id, message, agent_id, source } = request.body;
         const chatSource = normalizeSource(source);
         let selectedAgentId = agent_id;
@@ -77,24 +85,41 @@ async function chatRoutes(fastify, opts) {
           chatSource,
         );
 
-        const loop = new AgentLoop(
-          llm,
-          connection,
-          staging,
-          permissions,
-          fastify.log,
-          {
-            promptFlags: entry.promptFlags || null,
-            phase1Store,
-            selectedAgentId,
-          },
-        );
-        const result = await loop.run(session_id, message, tokenBudget);
+        const queueAgentId = entry.canonicalAgentId || selectedAgentId;
+        const result = await runQueue.run(queueAgentId, async () => {
+          if (state && state.paused) {
+            const err = new Error(
+              "Agent execution was paused while this request was queued",
+            );
+            err.statusCode = 423;
+            throw err;
+          }
+          if (!connection.connected) {
+            const err = new Error("Win98 agent disconnected while queued");
+            err.statusCode = 503;
+            throw err;
+          }
+
+          const loop = new AgentLoop(
+            llm,
+            connection,
+            staging,
+            permissions,
+            fastify.log,
+            {
+              promptFlags: entry.promptFlags || null,
+              customPrompt: entry.customPrompt || "",
+              phase1Store,
+              selectedAgentId,
+            },
+          );
+          return loop.run(session_id, message, tokenBudget);
+        });
 
         return reply.send({ session_id, source: chatSource, ...result });
       } catch (err) {
         fastify.log.error({ err }, "Chat request failed");
-        return reply.status(500).send({
+        return reply.status(err.statusCode || 500).send({
           error: err && err.message ? err.message : "Chat request failed",
         });
       }

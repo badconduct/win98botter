@@ -1,9 +1,13 @@
 "use strict";
 
-const { buildSystemPrompt } = require("../agent/context");
+const {
+  buildSystemPrompt,
+  shouldUseCompactPrompt,
+} = require("../agent/context");
 const { buildPortfolioPlan } = require("../agent/portfolio");
-const { schemaList } = require("../win98/tools");
+const { schemaList, filterSchemasForAgent } = require("../win98/tools");
 const PermissionsManager = require("../agent/permissions");
+const queries = require("../db/queries");
 
 /**
  * GET /api/system-prompt?agent_id=XXX
@@ -13,7 +17,7 @@ const PermissionsManager = require("../agent/permissions");
  * shown in the prompt is always accurate.
  */
 async function systemPromptRoutes(fastify, opts) {
-  const { registry } = opts;
+  const { registry, llm } = opts;
 
   const DEFAULT_FLAGS = {
     execution_patterns: true,
@@ -58,13 +62,12 @@ async function systemPromptRoutes(fastify, opts) {
         permissions = def ? def.permissions : new PermissionsManager();
       }
 
-      const allSchemas = schemaList();
+      const entry = agent_id ? registry.get(agent_id) : registry.getDefault();
+      const agentInfo = entry ? entry.connection.agentInfo : null;
+      const allSchemas = filterSchemasForAgent(schemaList(), agentInfo);
       const allowedNames = permissions
         .filterSchemas(allSchemas)
         .map((s) => s.name);
-
-      const entry = agent_id ? registry.get(agent_id) : registry.getDefault();
-      const agentInfo = entry ? entry.connection.agentInfo : null;
 
       const promptFlags = normalizeFlags(entry ? entry.promptFlags : null);
       const portfolioPlan = request_text
@@ -75,11 +78,16 @@ async function systemPromptRoutes(fastify, opts) {
         permissions,
         agentInfo,
         promptFlags,
-        { portfolioPlan },
+        {
+          portfolioPlan,
+          customPrompt: entry ? entry.customPrompt || "" : "",
+          compact: shouldUseCompactPrompt(llm?.apiUrl, llm?.model),
+        },
       );
       return reply.send({
         prompt,
         flags: promptFlags,
+        custom_prompt: entry ? entry.customPrompt || "" : "",
         permissions: permissions.getAll(),
         portfolioPlan,
       });
@@ -112,7 +120,47 @@ async function systemPromptRoutes(fastify, opts) {
       }
 
       entry.promptFlags = normalizeFlags(flags);
+      queries.saveAgentPromptSettings(
+        entry.canonicalAgentId || agent_id,
+        entry.promptFlags,
+        entry.customPrompt || "",
+      );
       return reply.send({ success: true, flags: entry.promptFlags });
+    },
+  );
+
+  fastify.post(
+    "/api/system-prompt/custom",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["agent_id", "custom_prompt"],
+          properties: {
+            agent_id: { type: "string" },
+            custom_prompt: { type: "string", maxLength: 8192 },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { agent_id, custom_prompt } = request.body;
+      const entry = registry.get(agent_id);
+      if (!entry) {
+        return reply.code(404).send({ error: "Agent not found" });
+      }
+
+      entry.customPrompt = String(custom_prompt || "").trim();
+      queries.saveAgentPromptSettings(
+        entry.canonicalAgentId || agent_id,
+        entry.promptFlags || normalizeFlags(null),
+        entry.customPrompt,
+      );
+      return reply.send({
+        success: true,
+        custom_prompt: entry.customPrompt,
+      });
     },
   );
 }

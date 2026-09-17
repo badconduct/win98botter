@@ -36,6 +36,51 @@ function deleteAgent(agentId) {
   getDb().prepare("DELETE FROM agents WHERE agent_id = ?").run(agentId);
 }
 
+function getAgentPromptSettings(agentId) {
+  const row = getDb()
+    .prepare(
+      "SELECT flags_json, custom_prompt, updated_at FROM agent_prompt_settings WHERE agent_id = ?",
+    )
+    .get(agentId);
+  if (!row) return { flags: null, customPrompt: "", updatedAt: null };
+
+  let flags = null;
+  try {
+    flags = JSON.parse(row.flags_json || "{}");
+  } catch (_) {
+    flags = null;
+  }
+  return {
+    flags: flags && typeof flags === "object" ? flags : null,
+    customPrompt: String(row.custom_prompt || ""),
+    updatedAt: row.updated_at || null,
+  };
+}
+
+function saveAgentPromptSettings(agentId, flags, customPrompt) {
+  const existing = getAgentPromptSettings(agentId);
+  const nextFlags =
+    flags && typeof flags === "object" ? flags : existing.flags || {};
+  const nextPrompt =
+    customPrompt === undefined || customPrompt === null
+      ? existing.customPrompt
+      : String(customPrompt);
+
+  getDb()
+    .prepare(
+      `INSERT INTO agent_prompt_settings
+       (agent_id, flags_json, custom_prompt, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(agent_id) DO UPDATE SET
+         flags_json = excluded.flags_json,
+         custom_prompt = excluded.custom_prompt,
+         updated_at = excluded.updated_at`,
+    )
+    .run(agentId, JSON.stringify(nextFlags), nextPrompt, now());
+
+  return getAgentPromptSettings(agentId);
+}
+
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
 function createSession(id, agentId, win98Host, llmModel, source) {
@@ -171,7 +216,12 @@ function getFileChanges(sessionId) {
 
 function getFileChangeById(changeId) {
   return getDb()
-    .prepare("SELECT * FROM file_changes WHERE id = ?")
+    .prepare(
+      `SELECT file_changes.*, sessions.agent_id
+       FROM file_changes
+       LEFT JOIN sessions ON sessions.id = file_changes.session_id
+       WHERE file_changes.id = ?`,
+    )
     .get(changeId);
 }
 
@@ -197,13 +247,33 @@ function getKnownFileLocations(agentId, fileName) {
  * If the location was already known, this is a no-op (UNIQUE constraint handles it).
  */
 function recordFileLocation(agentId, fileName, discPath) {
-  getDb()
+  const verifiedAt = now();
+  const existing = getDb()
     .prepare(
-      `INSERT OR IGNORE INTO file_locations 
+      `SELECT id FROM file_locations
+       WHERE agent_id = ? AND lower(discovered_path) = lower(?)
+       LIMIT 1`,
+    )
+    .get(agentId, discPath);
+
+  if (existing) {
+    getDb()
+      .prepare(
+        `UPDATE file_locations
+         SET file_name = ?, discovered_path = ?, last_verified = ?, exists_flag = 1
+         WHERE id = ?`,
+      )
+      .run(fileName, discPath, verifiedAt, existing.id);
+    return existing.id;
+  }
+
+  return getDb()
+    .prepare(
+      `INSERT INTO file_locations
        (agent_id, file_name, discovered_path, first_found_at, last_verified, exists_flag)
        VALUES (?, ?, ?, ?, ?, 1)`,
     )
-    .run(agentId, fileName, discPath, now(), now());
+    .run(agentId, fileName, discPath, verifiedAt, verifiedAt).lastInsertRowid;
 }
 
 /**
@@ -214,7 +284,7 @@ function getFileLocationByPath(agentId, discPath) {
     .prepare(
       `SELECT *
        FROM file_locations
-       WHERE agent_id = ? AND discovered_path = ?
+       WHERE agent_id = ? AND lower(discovered_path) = lower(?)
        ORDER BY id DESC
        LIMIT 1`,
     )
@@ -230,7 +300,7 @@ function updateFileLocationVerification(agentId, fileName, discPath, exists) {
     .prepare(
       `UPDATE file_locations 
        SET last_verified = ?, exists_flag = ?
-       WHERE agent_id = ? AND file_name = ? AND discovered_path = ?`,
+       WHERE agent_id = ? AND lower(file_name) = lower(?) AND lower(discovered_path) = lower(?)`,
     )
     .run(now(), exists ? 1 : 0, agentId, fileName, discPath);
 }
@@ -341,6 +411,38 @@ function getFirstBytesOfFile(fileLocationId, limit = 256) {
     .get(fileLocationId);
 }
 
+function getLatestFullFileContent(fileLocationId) {
+  return getDb()
+    .prepare(
+      `SELECT content, content_hash, bytes_read, updated_at
+       FROM file_contents
+       WHERE file_location_id = ?
+         AND line_start IS NULL AND line_end IS NULL
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+    )
+    .get(fileLocationId);
+}
+
+function invalidateFileContentByPath(agentId, discPath, exists) {
+  const record = getFileLocationByPath(agentId, discPath);
+  if (!record) return false;
+
+  getDb()
+    .prepare("DELETE FROM file_contents WHERE file_location_id = ?")
+    .run(record.id);
+  getDb()
+    .prepare(
+      `UPDATE file_locations
+       SET exists_flag = ?, last_verified = ?, remote_modified = NULL,
+           file_size_bytes = NULL, remote_content_hash = NULL,
+           remote_hash_algorithm = NULL
+       WHERE id = ?`,
+    )
+    .run(exists === false ? 0 : 1, now(), record.id);
+  return true;
+}
+
 /**
  * Update MIME type and text flag for a file location.
  * Called after file_exists or read_file to indicate file type.
@@ -350,14 +452,31 @@ function updateFileMetadata(
   mimeType,
   isTextFile,
   fileSizeBytes,
+  remoteModified,
 ) {
   getDb()
     .prepare(
       `UPDATE file_locations
-       SET mime_type = ?, is_text_file = ?, file_size_bytes = ?
+       SET mime_type = ?, is_text_file = ?, file_size_bytes = ?, remote_modified = ?
        WHERE id = ?`,
     )
-    .run(mimeType, isTextFile ? 1 : 0, fileSizeBytes, fileLocationId);
+    .run(
+      mimeType,
+      isTextFile ? 1 : 0,
+      fileSizeBytes,
+      remoteModified || null,
+      fileLocationId,
+    );
+}
+
+function updateFileRemoteHash(fileLocationId, algorithm, hash) {
+  getDb()
+    .prepare(
+      `UPDATE file_locations
+       SET remote_hash_algorithm = ?, remote_content_hash = ?
+       WHERE id = ?`,
+    )
+    .run(algorithm || null, hash || null, fileLocationId);
 }
 
 // ── Directory Tree Building ───────────────────────────────────────────────────
@@ -866,6 +985,8 @@ module.exports = {
   listAgents,
   getAgent,
   deleteAgent,
+  getAgentPromptSettings,
+  saveAgentPromptSettings,
   createSession,
   updateSessionTokens,
   getSession,
@@ -887,7 +1008,10 @@ module.exports = {
   getFileContentRanges,
   getCachedFileContent,
   getFirstBytesOfFile,
+  getLatestFullFileContent,
+  invalidateFileContentByPath,
   updateFileMetadata,
+  updateFileRemoteHash,
   recordDirectoryTreeEntry,
   updateDirectoryTreeVerification,
   reconcileDirectoryListing,

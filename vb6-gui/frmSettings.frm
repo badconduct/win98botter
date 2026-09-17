@@ -110,16 +110,14 @@ Private Const INI_PATH As String = "C:\WIN98BOTTER\agent_gui.ini"
 
 Private Sub Form_Load()
     Dim host As String, port As String, mcp As String
-    host = GetIni("gui", "relay_host", "127.0.0.1")
-   port = GetIni("gui", "relay_port", "3000")
+    LoadRelaySettings
+    host = RELAY_HOST
+    port = CStr(RELAY_PORT)
     mcp  = GetIni("gui", "mcp_exe",   "C:\WIN98BOTTER\win98-mcp-server.exe")
     txtRelayHost.Text = host
     txtRelayPort.Text = port
     txtMCPPath.Text   = mcp
 
-    ' Update the global constants used by modHTTP
-    RELAY_HOST = host
-    RELAY_PORT = CInt(port)
 End Sub
 
 Private Sub btnTestConn_Click()
@@ -127,7 +125,8 @@ Private Sub btnTestConn_Click()
     DoEvents
     Dim result As String
     result = GetHealth()
-    If InStr(result, "ok") > 0 Then
+    If InStr(result, """relay"":true") > 0 Or _
+       InStr(result, """relay"": true") > 0 Then
         lblTestResult.Caption = "Connected OK"
     Else
         lblTestResult.Caption = "FAILED: " & Left(result, 40)
@@ -143,20 +142,22 @@ End Sub
 
 Private Sub btnOK_Click()
     Dim host As String, port As String, mcp As String
+    Dim portNumber As Long
     host = Trim(txtRelayHost.Text)
     port = Trim(txtRelayPort.Text)
     mcp  = Trim(txtMCPPath.Text)
 
     If Len(host) = 0 Then MsgBox "Host cannot be blank.": Exit Sub
     If Not IsNumeric(port) Then MsgBox "Port must be a number.": Exit Sub
-    If CInt(port) < 1 Or CInt(port) > 65535 Then MsgBox "Port must be 1-65535.": Exit Sub
+    portNumber = CLng(port)
+    If portNumber < 1 Or portNumber > 32767 Then MsgBox "Port must be 1-32767.": Exit Sub
 
     WriteIni "gui", "relay_host", host, INI_PATH
     WriteIni "gui", "relay_port", port, INI_PATH
     WriteIni "gui", "mcp_exe",    mcp,  INI_PATH
 
     RELAY_HOST = host
-    RELAY_PORT = CInt(port)
+    RELAY_PORT = CInt(portNumber)
     MCP_EXE    = mcp
 
     Unload Me

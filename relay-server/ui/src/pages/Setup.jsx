@@ -26,12 +26,21 @@ const PROVIDERS = [
     label: "Ollama (local)",
     urlHint: "http://host.docker.internal:11434/v1",
     modelHint: DEFAULT_MODEL,
+    keyOptional: true,
     note: "Docker URL: host.docker.internal  |  bare-metal: localhost  \u2014  Ollama must listen on 0.0.0.0, not 127.0.0.1",
   },
   {
     label: "LM Studio (local)",
     urlHint: "http://localhost:1234/v1",
     modelHint: "local-model",
+    keyOptional: true,
+  },
+  {
+    label: "ChatGPT account (Codex CLI)",
+    urlHint: "codex://local",
+    modelHint: "default",
+    keyOptional: true,
+    note: "Uses the Codex CLI installed in the relay container and your ChatGPT login instead of an API key. Before testing, run `docker compose run --rm --no-deps relay codex login --device-auth` once from relay-server.",
   },
   { label: "Custom / Other", urlHint: "", modelHint: "" },
 ];
@@ -49,7 +58,7 @@ export default function Setup({ onDone, mode = "setup" }) {
   const [apiUrl, setApiUrl] = useState(PROVIDERS[0].urlHint);
   const [apiKey, setApiKey] = useState("");
   const [hasStoredApiKey, setHasStoredApiKey] = useState(false);
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [model, setModel] = useState(PROVIDERS[0].modelHint);
   const [httpPort, setHttpPort] = useState("3000");
   const [tcpPort, setTcpPort] = useState("9000");
   const [phase1Enabled, setPhase1Enabled] = useState(false);
@@ -171,6 +180,8 @@ export default function Setup({ onDone, mode = "setup" }) {
       await api.saveConfig({
         BOT_API_URL: apiUrl,
         BOT_API_KEY: apiKey,
+        CLEAR_BOT_API_KEY:
+          PROVIDERS[providerIdx].keyOptional === true && !apiKey,
         BOT_MODEL: model,
         HTTP_PORT: httpPort,
         WIN98_LISTEN_PORT: tcpPort,
@@ -282,7 +293,7 @@ export default function Setup({ onDone, mode = "setup" }) {
               placeholder={
                 hasStoredApiKey
                   ? "Saved key on server — leave blank to keep it"
-                  : providerIdx === 3 || providerIdx === 4
+                  : PROVIDERS[providerIdx].keyOptional
                     ? "(leave blank for local servers)"
                     : "sk-…"
               }
