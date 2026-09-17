@@ -35,6 +35,9 @@ in the separate working checkout.
   and `BOT_API_KEY_FILE` containing only the client token, never admin token.
 - Run always on, nonroot, with read-only application files, dropped
   capabilities, no-new-privileges, bounded logs/resources and persistent data.
+- Set `WIN98_ALLOWED_PEERS` to comma-separated allowed IPv4 agent addresses.
+  Dockernet must explicitly set it; absent configuration retains legacy LAN
+  behavior. Rejected peers are disconnected before agent registration.
 - The application HTTP API is not independently authenticated: protect all
   routes at Traefik and do not publish port 3000. Native TCP is a separate
   trusted-LAN management channel and needs explicit ingress restrictions.
@@ -59,7 +62,7 @@ or apply a reviewed forward fix rather than dropping the database on rollback.
 
 ## Verification and remaining gates
 
-Local Linux image: 41 tests passed, PostgreSQL 18.6 migration/runtime and
+Initial local Linux image: 41 tests passed, PostgreSQL 18.6 migration/runtime and
 second-run acceptance passed, hardened UI/health and SQLite/config replacement
 persistence passed. Disposable fixtures were removed. No live AI inference or
 Dockernet deployment is part of those tests.
