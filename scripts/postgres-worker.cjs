@@ -23,7 +23,7 @@ const cfg = { phase1PgEnabled:'1', phase1PgSchemaMode:'external',
     await assert.rejects(pool.query('CREATE TABLE forbidden(id int)'), /permission denied/);
     await assert.rejects(pool.query('DELETE FROM relay_schema_migrations'), /permission denied/);
     const untrusted = new Pool({...postgresConfig(cfg),ssl:{rejectUnauthorized:true}});
-    try { await assert.rejects(untrusted.query('SELECT 1')); } finally { await untrusted.end(); }
+    try { await assert.rejects(untrusted.query('SELECT 1'), {code:'DEPTH_ZERO_SELF_SIGNED_CERT'}); } finally { await untrusted.end(); }
     const wrongPassword = new Pool({...postgresConfig(cfg),password:'deliberately-wrong'});
     try { await assert.rejects(wrongPassword.query('SELECT 1'), /password authentication failed/); } finally { await wrongPassword.end(); }
     console.log('PASS: PG18 migration, verified TLS, map/file round trips, agent separation, denied runtime DDL, wrong-CA and wrong-password rejection');

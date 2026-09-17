@@ -40,6 +40,21 @@ function profileHeaders() {
   return { "X-AI-Profile": profile };
 }
 
+function validateManagedEndpoint(apiUrl) {
+  if (!process.env.BOT_API_KEY_FILE) return;
+  const trusted = process.env.BOT_MANAGED_API_URL;
+  if (!trusted) {
+    throw new Error("File-backed AI credentials require the configured BOT_MANAGED_API_URL endpoint");
+  }
+  const parsed = new URL(trusted);
+  if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error("Managed AI endpoint must be an HTTP(S) URL without user credentials");
+  }
+  if (normalizeApiUrl(trusted) !== apiUrl) {
+    throw new Error("File-backed AI credentials require the configured BOT_MANAGED_API_URL endpoint");
+  }
+}
+
 function parseRetryDelaySeconds(val) {
   if (!val) return null;
   const s = String(val).trim();
@@ -298,8 +313,11 @@ class LLMClient {
   }
 
   configure(apiUrl, apiKey, model) {
-    this.apiUrl = normalizeApiUrl(apiUrl);
-    this.apiKey = configuredApiKey(apiKey);
+    const normalizedUrl = normalizeApiUrl(apiUrl);
+    validateManagedEndpoint(normalizedUrl);
+    const configuredKey = configuredApiKey(apiKey);
+    this.apiUrl = normalizedUrl;
+    this.apiKey = configuredKey;
     this.model = model;
     this._anthropic = isAnthropic(this.apiUrl);
     this._codexCli = isCodexCliUrl(this.apiUrl)

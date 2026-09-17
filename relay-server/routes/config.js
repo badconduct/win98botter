@@ -219,6 +219,15 @@ async function configRoutes(fastify, opts) {
       }
       if (clearBotApiKey) newEnv.BOT_API_KEY = "";
 
+      // Validate before persisting: a shared file-backed token must never be
+      // redirected to an arbitrary URL through Setup or its connection test.
+      const LLMClient = require("../agent/llm.js");
+      try {
+        new LLMClient(newEnv.BOT_API_URL || "", newEnv.BOT_API_KEY || "", newEnv.BOT_MODEL || "");
+      } catch (_) {
+        return reply.code(400).send({ error: "AI configuration conflicts with the managed endpoint or credential file" });
+      }
+
       writeEnv(newEnv);
       writePersistentConfig(newEnv);
 
@@ -282,8 +291,8 @@ async function configRoutes(fastify, opts) {
         "LLM connection test started",
       );
       const LLMClient = require("../agent/llm.js");
-      const client = new LLMClient(BOT_API_URL, effectiveKey, BOT_MODEL);
       try {
+        const client = new LLMClient(BOT_API_URL, effectiveKey, BOT_MODEL);
         await client.call(
           [{ role: "user", content: "ping" }],
           [],

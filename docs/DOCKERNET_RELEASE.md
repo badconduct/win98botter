@@ -36,6 +36,9 @@ in the separate working checkout.
   `PHASE1_PG_URL`. Keep the migrator credential out of the running relay.
 - Shared AI: trusted API `/v1` URL, `BOT_MODEL=default`, `BOT_AI_PROFILE`,
   and `BOT_API_KEY_FILE` containing only the client token, never admin token.
+  Set `BOT_MANAGED_API_URL` to that same trusted `/v1` URL in deployment config.
+  With a file-backed token, Setup and connection tests cannot redirect it to a
+  different endpoint. Use verified HTTPS on Dockernet; do not disable TLS checks.
 - Run always on, nonroot, with read-only application files, dropped
   capabilities, no-new-privileges, bounded logs/resources and persistent data.
 - Set `WIN98_ALLOWED_PEERS` to comma-separated allowed IPv4 agent addresses.
@@ -65,7 +68,7 @@ or apply a reviewed forward fix rather than dropping the database on rollback.
 
 ## Verification and remaining gates
 
-Initial local Linux image: 41 tests passed, PostgreSQL 18.6 migration/runtime and
+Local Linux image: 42 tests passed, PostgreSQL 18.6 migration/runtime and
 second-run acceptance passed, hardened UI/health and SQLite/config replacement
 persistence passed. Disposable fixtures were removed. No live AI inference or
 Dockernet deployment is part of those tests.
