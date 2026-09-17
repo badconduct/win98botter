@@ -22,6 +22,7 @@ async function start() {
 (async()=>{
   docker(['volume','create',name]); volume=true;
   let base=await start();
+  docker(['exec',name,'sh','-c','! command -v npm && ! command -v npx && ! command -v yarn']);
   assert.match(await (await fetch(base+'/')).text(),/id="root"/);
   const response=await fetch(base+'/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({BOT_API_URL:'http://127.0.0.1:1/v1',BOT_MODEL:'persistence-test'})});

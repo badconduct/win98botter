@@ -38,7 +38,7 @@ jobs:
             --mount "type=bind,src=${PWD}/relay-server/tests,dst=/app/tests,readonly" \
             --mount "type=bind,src=${PWD}/win98-mcp-agent,dst=/win98-mcp-agent,readonly" \
             --mount "type=bind,src=${PWD}/vb6-gui,dst=/vb6-gui,readonly" \
-            win98botter:ci npm test
+            win98botter:ci sh -c 'node --test tests/*.test.js'
       - name: Exercise actual migrations and database runtime
         run: node scripts/test-postgresql.cjs win98botter:ci
       - name: Exercise hardened relay and persistent SQLite

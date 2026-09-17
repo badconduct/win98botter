@@ -23,6 +23,9 @@ in the separate working checkout.
 ## Runtime
 
 - Build `relay-server/Dockerfile.gateway`. No local Codex installation/login.
+- npm/Yarn are build-only, not shipped in the final runtime. The pinned base's
+  OpenSSL packages are upgraded to the explicitly pinned security revision;
+  CI scans the resulting runtime without suppressing fixable high/critical CVEs.
 - Persistent `/data`: SQLite `relay.db`, settings, and `staging/`.
 - Shared PostgreSQL: dedicated database/owner/migrator/runtime roles. No new
   PostgreSQL container, no exposed database port, no conversion of SQLite.
