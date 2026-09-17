@@ -1,0 +1,40 @@
+# Shared-gateway variant: retain the relay/UI, omit the local Codex CLI.
+FROM node:24-alpine@sha256:50c8e8ca1d27439048670df5883f32d57cf81cff6233222c893fd0d9884cbd81 AS ui-builder
+WORKDIR /build/ui
+COPY ui/package*.json ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
+FROM node:24-alpine@sha256:50c8e8ca1d27439048670df5883f32d57cf81cff6233222c893fd0d9884cbd81 AS dependencies
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev --strict-allow-scripts && npm cache clean --force
+
+FROM node:24-alpine@sha256:50c8e8ca1d27439048670df5883f32d57cf81cff6233222c893fd0d9884cbd81 AS relay
+# Patch the pinned base's OpenSSL packages; package managers are build-only.
+RUN apk add --no-cache libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 \
+    && rm -rf /usr/local/lib/node_modules/npm /opt/yarn-v1.22.22 \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/yarn /usr/local/bin/yarnpkg
+WORKDIR /app
+COPY --from=dependencies /app/package*.json ./
+COPY --from=dependencies /app/node_modules ./node_modules/
+# Explicit source selection: never copy local DBs, credentials, or staging.
+COPY index.js codex-bridge.js ./
+COPY agent/ ./agent/
+COPY db/ ./db/
+COPY routes/ ./routes/
+COPY staging/ ./staging/
+COPY win98/ ./win98/
+COPY --from=ui-builder /build/public ./public/
+RUN mkdir -p /data/staging && chown -R node:node /data
+USER node
+ENV NODE_ENV=production \
+    DB_PATH=/data/relay.db \
+    CONFIG_JSON_PATH=/data/relay-config.json \
+    RELAY_ENV_PATH=/data/relay.env \
+    STAGING_DIR=/data/staging \
+    PHASE1_PG_ENABLED=0 \
+    BOT_MODEL=default
+EXPOSE 3000 9000
+CMD ["node", "index.js"]

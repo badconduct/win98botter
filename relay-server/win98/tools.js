@@ -37,6 +37,55 @@ const TOOL_SCHEMAS = [
     },
   },
   {
+    name: "read_file_range",
+    description:
+      "Read a bounded byte range without transferring the entire file. Returns at most 32KB from the requested offset.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute Win98 file path" },
+        offset: { type: "integer", minimum: 0, description: "Zero-based byte offset" },
+        length: {
+          type: "integer",
+          minimum: 1,
+          maximum: 32768,
+          description: "Bytes to return (default 8192, max 32768)",
+        },
+      },
+      required: ["path", "offset"],
+    },
+  },
+  {
+    name: "tail_file",
+    description:
+      "Read only the final bytes of a file. Prefer this for recent log activity instead of reading the complete file.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute Win98 file path" },
+        length: {
+          type: "integer",
+          minimum: 1,
+          maximum: 32768,
+          description: "Number of final bytes to return (default 8192)",
+        },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "get_file_hash",
+    description:
+      "Calculate a streaming CRC32 fingerprint without transferring file content. Use with size and timestamp to verify cache identity; CRC32 is not a cryptographic security hash.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute Win98 file path" },
+      },
+      required: ["path"],
+    },
+  },
+  {
     name: "write_file",
     description:
       "Write text content to a file on Win98SE. Automatically backs up the existing file first. Returns the backup path.",
@@ -220,32 +269,6 @@ const TOOL_SCHEMAS = [
     },
   },
   {
-    name: "list_backups",
-    description: "List available backup snapshots for a file.",
-    input_schema: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "Original file path" },
-      },
-      required: ["path"],
-    },
-  },
-  {
-    name: "restore_backup",
-    description: "Restore a file from a specific backup snapshot.",
-    input_schema: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "Original file path to restore" },
-        timestamp: {
-          type: "string",
-          description: "Backup timestamp (YYYYMMDD_HHMMSS)",
-        },
-      },
-      required: ["path", "timestamp"],
-    },
-  },
-  {
     name: "get_history",
     description: "Get the recent file change audit log from Win98SE.",
     input_schema: {
@@ -398,6 +421,63 @@ const TOOL_SCHEMAS = [
         key: { type: "string", description: "Key path" },
       },
       required: ["hive", "key"],
+    },
+  },
+
+  {
+    name: "list_installed_apps",
+    description:
+      "Return structured installed-software inventory from machine/user Uninstall and App Paths registry keys.",
+    input_schema: {
+      type: "object",
+      properties: {
+        max_results: {
+          type: "integer",
+          minimum: 1,
+          maximum: 1000,
+          description: "Maximum entries to return (default 250)",
+        },
+      },
+    },
+  },
+  {
+    name: "list_startup_items",
+    description:
+      "Return structured startup entries from Run/RunOnce keys, WIN.INI, and Startup folders.",
+    input_schema: {
+      type: "object",
+      properties: {
+        max_results: {
+          type: "integer",
+          minimum: 1,
+          maximum: 1000,
+          description: "Maximum entries to return (default 250)",
+        },
+      },
+    },
+  },
+  {
+    name: "list_devices",
+    description:
+      "Return structured Windows 98 Plug and Play device inventory, including class, driver, hardware ID, and problem/status values.",
+    input_schema: {
+      type: "object",
+      properties: {
+        class: {
+          type: "string",
+          description: "Optional case-insensitive class filter",
+        },
+        problems_only: {
+          type: "boolean",
+          description: "Return only devices with a non-zero problem/status value",
+        },
+        max_results: {
+          type: "integer",
+          minimum: 1,
+          maximum: 2000,
+          description: "Maximum entries to return (default 500)",
+        },
+      },
     },
   },
 
@@ -563,6 +643,68 @@ const TOOL_SCHEMAS = [
         bg_rgb_string: {
           type: "string",
           description: 'Background color as "R G B" (e.g. "0 0 128")',
+        },
+      },
+    },
+  },
+
+  {
+    name: "get_network_config",
+    description:
+      "Return structured IPv4 adapter, gateway, DHCP, hostname, domain, and DNS configuration.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "ping_host",
+    description:
+      "Send one IPv4 ICMP echo request and return structured reachability, latency, address, and status data.",
+    input_schema: {
+      type: "object",
+      properties: {
+        host: { type: "string", description: "IPv4 address or hostname" },
+        timeout_ms: {
+          type: "integer",
+          minimum: 100,
+          maximum: 30000,
+          description: "Timeout in milliseconds (default 3000)",
+        },
+      },
+      required: ["host"],
+    },
+  },
+  {
+    name: "dns_lookup",
+    description:
+      "Resolve a hostname using the Windows 98 Winsock resolver and return structured IPv4 addresses.",
+    input_schema: {
+      type: "object",
+      properties: {
+        host: { type: "string", description: "Hostname to resolve" },
+      },
+      required: ["host"],
+    },
+  },
+  {
+    name: "list_network_connections",
+    description:
+      "Return structured local TCP and UDP endpoints without parsing NETSTAT output.",
+    input_schema: {
+      type: "object",
+      properties: {
+        protocol: {
+          type: "string",
+          enum: ["all", "tcp", "udp"],
+          description: "Protocol filter (default all)",
+        },
+        include_listening: {
+          type: "boolean",
+          description: "Include listening TCP sockets (default true)",
+        },
+        max_results: {
+          type: "integer",
+          minimum: 1,
+          maximum: 2000,
+          description: "Maximum endpoints to return (default 500)",
         },
       },
     },
@@ -880,4 +1022,32 @@ function getSchema(name) {
   return TOOL_SCHEMAS.find((t) => t.name === name) || null;
 }
 
-module.exports = { TOOL_SCHEMAS, schemaList, openaiSchemaList, getSchema };
+function advertisedToolNames(agentInfo) {
+  if (!agentInfo || !Array.isArray(agentInfo.tools)) return null;
+  return new Set(
+    agentInfo.tools
+      .map((tool) => (typeof tool === "string" ? tool : tool && tool.name))
+      .filter((name) => typeof name === "string" && name.length > 0),
+  );
+}
+
+function filterSchemasForAgent(schemas, agentInfo) {
+  const advertised = advertisedToolNames(agentInfo);
+  if (advertised === null) return schemas.slice();
+  return schemas.filter((schema) => advertised.has(schema.name));
+}
+
+function isToolAdvertised(agentInfo, name) {
+  const advertised = advertisedToolNames(agentInfo);
+  return advertised === null || advertised.has(name);
+}
+
+module.exports = {
+  TOOL_SCHEMAS,
+  schemaList,
+  openaiSchemaList,
+  getSchema,
+  advertisedToolNames,
+  filterSchemasForAgent,
+  isToolAdvertised,
+};

@@ -38,6 +38,8 @@
 #include "registry_ops.h"
 #include "process_ops.h"
 #include "system_ops.h"
+#include "network_ops.h"
+#include "inventory_ops.h"
 #include "ipc_ops.h"
 #include "cli_mode.h"
 
@@ -61,8 +63,8 @@ static cJSON *do_startup_check(void);
 static DWORD g_last_heartbeat_tick = 0;
 
 /* Relay connection parameters — set from environment or defaults */
-static char g_relay_host[128] = "127.0.0.1";
-static int  g_relay_port      = 9000;
+static char g_relay_host[128] = DEFAULT_RELAY_HOST;
+static int  g_relay_port      = DEFAULT_RELAY_PORT;
 static int  g_log_enabled     = 1;
 static int  g_log_verbose     = 0;
 static int  g_log_console     = 1;
@@ -178,12 +180,28 @@ static void agent_log_debug(const char *fmt, ...)
 
 /* ── TCP framing ──────────────────────────────────────────────────────────── */
 
+static int tcp_send_all(SOCKET sock, const char *buf, int len)
+{
+    int total = 0;
+    int sent;
+
+    while (total < len) {
+        sent = send(sock, buf + total, len - total, 0);
+        if (sent <= 0) {
+            agent_logf("ERROR", "send() failed after %d/%d bytes: %d.",
+                       total, len, WSAGetLastError());
+            return -1;
+        }
+        total += sent;
+    }
+    return 0;
+}
+
 static int tcp_send_msg(SOCKET sock, cJSON *msg)
 {
     char  *json_str;
     DWORD  len;
     unsigned char  hdr[4];
-    int    sent;
 
     json_str = cJSON_PrintUnformatted(msg);
     if (!json_str) return -1;
@@ -196,12 +214,16 @@ static int tcp_send_msg(SOCKET sock, cJSON *msg)
     hdr[2] = (unsigned char)((len >>  8) & 0xFF);
     hdr[3] = (unsigned char)((len      ) & 0xFF);
 
-    sent = send(sock, (const char *)hdr, 4, 0);
-    if (sent != 4) { free(json_str); return -1; }
-
-    sent = send(sock, json_str, (int)len, 0);
+    if (tcp_send_all(sock, (const char *)hdr, 4) != 0) {
+        free(json_str);
+        return -1;
+    }
+    if (tcp_send_all(sock, json_str, (int)len) != 0) {
+        free(json_str);
+        return -1;
+    }
     free(json_str);
-    return (sent == (int)len) ? 0 : -1;
+    return 0;
 }
 
 /*
@@ -220,7 +242,11 @@ static int tcp_recv_msg(SOCKET sock, char **out_buf, int *out_len)
     total = 0;
     while (total < 4) {
         received = recv(sock, (char *)hdr + total, 4 - total, 0);
-        if (received <= 0) return -1;
+        if (received <= 0) {
+            agent_logf("WARN", "recv() ended while reading frame header: %d.",
+                       received == 0 ? 0 : WSAGetLastError());
+            return -1;
+        }
         total += received;
     }
 
@@ -228,15 +254,28 @@ static int tcp_recv_msg(SOCKET sock, char **out_buf, int *out_len)
             | ((DWORD)hdr[2] <<  8) |  (DWORD)hdr[3];
 
     /* Sanity: reject oversized messages (> 16 MB) */
-    if (msg_len == 0 || msg_len > 16 * 1024 * 1024) return -1;
+    if (msg_len == 0 || msg_len > MAX_MESSAGE_BYTES) {
+        agent_logf("ERROR", "Invalid relay frame length: %lu.", msg_len);
+        return -1;
+    }
 
     buf = (char *)malloc(msg_len + 1);
-    if (!buf) return -1;
+    if (!buf) {
+        agent_logf("ERROR", "Out of memory receiving %lu-byte relay frame.",
+                   msg_len);
+        return -1;
+    }
 
     total = 0;
     while ((DWORD)total < msg_len) {
         received = recv(sock, buf + total, (int)(msg_len - (DWORD)total), 0);
-        if (received <= 0) { free(buf); return -1; }
+        if (received <= 0) {
+            agent_logf("WARN", "recv() ended after %d/%lu payload bytes: %d.",
+                       total, msg_len,
+                       received == 0 ? 0 : WSAGetLastError());
+            free(buf);
+            return -1;
+        }
         total += received;
     }
     buf[msg_len] = '\0';
@@ -428,6 +467,9 @@ static cJSON *build_tools_list(void)
 } while(0)
 
     TOOL("read_file",          "Read bytes from a file",                       1);
+    TOOL("read_file_range",    "Read a bounded byte range from a file",        1);
+    TOOL("tail_file",          "Read the final bytes of a file",               1);
+    TOOL("get_file_hash",      "Calculate a streaming CRC32 file fingerprint", 1);
     TOOL("write_file",         "Write text to a file",                         1);
     TOOL("write_file_binary",  "Write a binary chunk to a file handle",        1);
     TOOL("append_file",        "Append text to a file",                        1);
@@ -459,6 +501,9 @@ static cJSON *build_tools_list(void)
     TOOL("write_registry",     "Write a registry value",                       1);
     TOOL("delete_registry",    "Delete a registry key or value",               1);
     TOOL("list_registry",      "List subkeys and values of a registry key",    1);
+    TOOL("list_installed_apps", "List installed applications and App Paths",   1);
+    TOOL("list_startup_items",  "List registry, WIN.INI and Startup items",     1);
+    TOOL("list_devices",        "List Win98 Plug and Play devices",             1);
     TOOL("list_processes",     "List running processes",                       1);
     TOOL("kill_process",       "Terminate a process by PID or name",           1);
     TOOL("get_system_info",    "Get OS version and memory info",               1);
@@ -478,6 +523,10 @@ static cJSON *build_tools_list(void)
     TOOL("write_serial",       "Write bytes to a COM port",                    1);
     TOOL("get_audio_devices",  "List installed audio input and output devices", 1);
     TOOL("get_midi_devices",   "List MIDI input devices",                      1);
+    TOOL("get_network_config", "Get structured IPv4 adapter and DNS settings", 1);
+    TOOL("ping_host",          "Send an IPv4 ICMP echo request",               1);
+    TOOL("dns_lookup",         "Resolve a hostname with Winsock",              1);
+    TOOL("list_network_connections", "List structured TCP and UDP endpoints",  1);
 
 #undef TOOL
     return arr;
@@ -561,6 +610,9 @@ static cJSON *fn_file_exists(cJSON *p)        { return tool_file_exists(p); }
 
 ToolEntry g_tools[] = {
     { "read_file",             tool_read_file          },
+    { "read_file_range",       tool_read_file_range    },
+    { "tail_file",             tool_tail_file          },
+    { "get_file_hash",         tool_get_file_hash      },
     { "write_file",            tool_write_file         },
     { "write_file_binary",     tool_write_file_binary  },
     { "append_file",           tool_append_file        },
@@ -592,6 +644,9 @@ ToolEntry g_tools[] = {
     { "write_registry",        tool_write_registry     },
     { "delete_registry",       tool_delete_registry    },
     { "list_registry",         tool_list_registry      },
+    { "list_installed_apps",   tool_list_installed_apps},
+    { "list_startup_items",    tool_list_startup_items },
+    { "list_devices",          tool_list_devices       },
     { "list_processes",        tool_list_processes     },
     { "kill_process",          tool_kill_process       },
     { "get_system_info",       tool_get_system_info    },
@@ -611,6 +666,10 @@ ToolEntry g_tools[] = {
     { "write_serial",          tool_write_serial       },
     { "get_audio_devices",     tool_get_audio_devices  },
     { "get_midi_devices",      tool_get_midi_devices   },
+    { "get_network_config",    tool_get_network_config },
+    { "ping_host",             tool_ping_host          },
+    { "dns_lookup",            tool_dns_lookup         },
+    { "list_network_connections", tool_list_network_connections },
     { NULL,                    NULL                    }
 };
 

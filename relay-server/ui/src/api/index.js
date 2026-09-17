@@ -55,18 +55,35 @@ export const api = {
       agent_id: agentId,
       flags,
     }),
+  setCustomSystemPrompt: (agentId, customPrompt) =>
+    request("POST", "/api/system-prompt/custom", {
+      agent_id: agentId,
+      custom_prompt: customPrompt,
+    }),
   setAgentPermissions: (agentId, permissions) =>
     request("POST", "/control", {
       action: "permissions",
       agent_id: agentId,
       permissions,
     }),
+  reloadAgentPermissions: (agentId) =>
+    request("POST", "/control", {
+      action: "reload_permissions",
+      agent_id: agentId,
+    }),
+  runAgentSelfTest: (agentId) =>
+    request(
+      "POST",
+      `/api/agents/${encodeURIComponent(agentId)}/self-test`,
+      {},
+    ),
 
   // Control
   control: (body) => request("POST", "/control", body),
 
   // Undo
-  undo: (agentId) => request("POST", "/undo", { agent_id: agentId }),
+  undo: (changeId, agentId) =>
+    request("POST", "/undo", { change_id: changeId, agent_id: agentId }),
 
   // Health
   health: () => request("GET", "/health"),

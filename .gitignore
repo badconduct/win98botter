@@ -1,14 +1,21 @@
-# ── Local/manual test artifacts ───────────────────────────────────────────
-test/
+# ── Local/manual test artifacts and coverage ────────────────────────────────
+/test/
+/scripts/pg-test-*/
+coverage/
+.nyc_output/
 
 # ── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
 **/node_modules/
 
 # ── Environment and local config ────────────────────────────────────────────
 .env
 .env.*
 !.env.example
+!**/.env.example
 *.local
+.codex/
+**/.codex/
 
 # ── Logs ────────────────────────────────────────────────────────────────────
 *.log
@@ -23,6 +30,7 @@ pnpm-debug.log*
 relay-server/staging_data/
 relay-server/data/
 relay-server/relay-config.json
+relay-server/*.db-*
 
 # ── Build outputs / temp files ──────────────────────────────────────────────
 *.tmp
@@ -30,11 +38,30 @@ relay-server/relay-config.json
 *.bak
 *.swp
 *.swo
+*.stackdump
 *.zip
 .DS_Store
 Thumbs.db
 
 # ── Win98 agent local build artifacts ───────────────────────────────────────
 win98-mcp-agent/*.exe
+win98-mcp-agent/*.com
+win98-mcp-agent/*.dll
+win98-mcp-agent/*.obj
+win98-mcp-agent/*.lib
+win98-mcp-agent/*.exp
+win98-mcp-agent/*.ilk
+win98-mcp-agent/*.map
+win98-mcp-agent/*.pdb
 win98-mcp-agent/*.plg
+win98-mcp-agent/*.ncb
+win98-mcp-agent/*.opt
+win98-mcp-agent/Debug/
+win98-mcp-agent/Release/
 win98-mcp-agent/agent.log
+
+# Machine-local Win98 configuration. Commit the example files instead.
+win98-mcp-agent/AGENT.INI
+win98-mcp-agent/permissions.ini
+!win98-mcp-agent/AGENT.INI.example
+!win98-mcp-agent/permissions.ini.example

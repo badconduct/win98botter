@@ -18,3 +18,15 @@ docker-compose.yml
 # Runtime data that should come from Docker volumes, not the image
 .env
 staging_data/
+.env.*
+data/
+relay-config.json
+*.db
+*.db-*
+*.sqlite*
+*.log
+*.pem
+*.key
+.codex/
+test/
+tests/

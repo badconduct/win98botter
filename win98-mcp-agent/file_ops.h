@@ -8,6 +8,9 @@
 #include "cJSON.h"
 
 cJSON *tool_read_file(cJSON *params);
+cJSON *tool_read_file_range(cJSON *params);
+cJSON *tool_tail_file(cJSON *params);
+cJSON *tool_get_file_hash(cJSON *params);
 cJSON *tool_write_file(cJSON *params);
 cJSON *tool_write_file_binary(cJSON *params);
 cJSON *tool_append_file(cJSON *params);

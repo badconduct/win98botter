@@ -5,16 +5,17 @@ Option Explicit
 
 Public RELAY_HOST As String
 Public RELAY_PORT As Integer
-Public MCP_EXE    As String
 
 ' Defaults — overridden by frmSettings / agent_gui.ini on startup
-Private Const DEFAULT_HOST As String  = "127.0.0.1"
+Private Const DEFAULT_HOST As String  = "192.168.1.100"
 Private Const DEFAULT_PORT As Integer = 3000
+Private Const GUI_INI_PATH As String = "C:\WIN98BOTTER\agent_gui.ini"
+Private m_settingsLoaded As Boolean
 
-Private Sub InitDefaults()
-    If Len(RELAY_HOST) = 0 Then RELAY_HOST = DEFAULT_HOST
-    If RELAY_PORT = 0      Then RELAY_PORT = DEFAULT_PORT
-End Sub
+Private Declare Function GetPrivateProfileStringA Lib "kernel32" ( _
+    ByVal lpAppName As String, ByVal lpKeyName As String, _
+    ByVal lpDefault As String, ByVal lpReturnedString As String, _
+    ByVal nSize As Long, ByVal lpFileName As String) As Long
 
 ' ── Win32 WinINet declarations ────────────────────────────────────────────────
 
@@ -60,11 +61,37 @@ Private Declare Function InternetSetOptionA Lib "wininet.dll" ( _
 Private Const INTERNET_OPTION_RECEIVE_TIMEOUT As Long = 6
 Private Const INTERNET_OPTION_CONNECT_TIMEOUT As Long = 2
 
+Public Sub LoadRelaySettings()
+    Dim hostBuf As String * 256
+    Dim portBuf As String * 32
+    Dim hostLen As Long
+    Dim portLen As Long
+    Dim parsedPort As Long
+
+    hostLen = GetPrivateProfileStringA("gui", "relay_host", DEFAULT_HOST, _
+                                      hostBuf, Len(hostBuf), GUI_INI_PATH)
+    portLen = GetPrivateProfileStringA("gui", "relay_port", CStr(DEFAULT_PORT), _
+                                      portBuf, Len(portBuf), GUI_INI_PATH)
+
+    RELAY_HOST = Trim$(Left$(hostBuf, hostLen))
+    If Len(RELAY_HOST) = 0 Then RELAY_HOST = DEFAULT_HOST
+
+    parsedPort = Val(Left$(portBuf, portLen))
+    If parsedPort < 1 Or parsedPort > 32767 Then parsedPort = DEFAULT_PORT
+    RELAY_PORT = CInt(parsedPort)
+    m_settingsLoaded = True
+End Sub
+
+Private Sub InitDefaults()
+    If Not m_settingsLoaded Then LoadRelaySettings
+    If Len(RELAY_HOST) = 0 Then RELAY_HOST = DEFAULT_HOST
+    If RELAY_PORT = 0 Then RELAY_PORT = DEFAULT_PORT
+End Sub
+
 ' ── Core HTTP POST ────────────────────────────────────────────────────────────
 
 Private Function HttpPost(ByVal path As String, ByVal body As String, _
                           ByVal timeout_ms As Long) As String
-    InitDefaults
     Dim hInet    As Long
     Dim hConn    As Long
     Dim hReq     As Long
@@ -72,6 +99,8 @@ Private Function HttpPost(ByVal path As String, ByVal body As String, _
     Dim buf      As String * 4096
     Dim bytesRead As Long
     Dim response  As String
+
+    InitDefaults
 
     hInet = InternetOpenA("Win98Botter/1.0", INTERNET_OPEN_TYPE_PRECONFIG, "", "", 0)
     If hInet = 0 Then HttpPost = "ERROR: InternetOpen failed": Exit Function
@@ -125,13 +154,14 @@ End Function
 ' ── Core HTTP GET ─────────────────────────────────────────────────────────────
 
 Private Function HttpGet(ByVal path As String) As String
-    InitDefaults
     Dim hInet    As Long
     Dim hConn    As Long
     Dim hReq     As Long
     Dim buf      As String * 4096
     Dim bytesRead As Long
     Dim response  As String
+
+    InitDefaults
 
     hInet = InternetOpenA("Win98Botter/1.0", INTERNET_OPEN_TYPE_PRECONFIG, "", "", 0)
     If hInet = 0 Then HttpGet = "ERROR: InternetOpen failed": Exit Function

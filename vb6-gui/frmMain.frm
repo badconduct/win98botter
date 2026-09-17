@@ -161,7 +161,7 @@ Begin VB.Form frmMain
          Width    =   1335
       End
       Begin VB.CheckBox chkRegistry
-         Caption  =   "Registry"
+         Caption  =   "Registry (Read)"
          Height   =   255
          Left     =   4440
          TabIndex =   11
@@ -190,32 +190,64 @@ Begin VB.Form frmMain
          Left     =   120
          TabIndex =   14
          Top      =   840
-         Width    =   1335
+         Width    =   1095
       End
       Begin VB.CheckBox chkSerial
          Caption  =   "Serial"
          Height   =   255
-         Left     =   1560
+         Left     =   1320
          TabIndex =   15
          Top      =   840
-         Width    =   1335
+         Width    =   1095
       End
       Begin VB.CheckBox chkAudio
          Caption  =   "Audio"
          Height   =   255
-         Left     =   3000
+         Left     =   2520
          TabIndex =   16
          Top      =   840
-         Width    =   1335
+         Width    =   1095
+      End
+      Begin VB.CheckBox chkMoveFile
+         Caption  =   "Move"
+         Height   =   255
+         Left     =   3720
+         TabIndex =   17
+         Top      =   840
+         Width    =   1095
+      End
+      Begin VB.CheckBox chkWindowRead
+         Caption  =   "Windows"
+         Height   =   255
+         Left     =   4920
+         TabIndex =   18
+         Top      =   840
+         Width    =   1095
+      End
+      Begin VB.CheckBox chkClipboardRead
+         Caption  =   "Clipboard"
+         Height   =   255
+         Left     =   6120
+         TabIndex =   19
+         Top      =   840
+         Width    =   1095
+      End
+      Begin VB.CheckBox chkNetworkRead
+         Caption  =   "Network"
+         Height   =   255
+         Left     =   7320
+         TabIndex =   20
+         Top      =   840
+         Width    =   1095
       End
 
       Begin VB.CommandButton btnSavePerms
          Caption  =   "Save"
          Height   =   375
-         Left     =   8280
-         TabIndex =   17
+         Left     =   8520
+         TabIndex =   21
          Top      =   720
-         Width    =   855
+         Width    =   735
       End
    End
 
@@ -226,7 +258,7 @@ Begin VB.Form frmMain
       Caption  =   "Status: Disconnected"
       Height   =   255
       Left     =   120
-      TabIndex =   18
+      TabIndex =   22
       Top      =   7680
       Width    =   9360
    End
@@ -286,6 +318,7 @@ Private Sub Form_Load()
     m_lastMsgId = 0
     m_inTray = False
 
+    LoadRelaySettings
     MCP_EXE = GetMCPExePath()
 
     LoadPermissions
@@ -515,12 +548,16 @@ Private Sub UpdatePermCheckboxes()
     chkReadFile.Value  = IIf(g_Perms.read_file,   1, 0)
     chkWriteFile.Value = IIf(g_Perms.write_file,  1, 0)
     chkRunCmd.Value    = IIf(g_Perms.run_command, 1, 0)
-    chkRegistry.Value  = IIf(g_Perms.read_registry Or g_Perms.write_registry, 1, 0)
+    chkRegistry.Value  = IIf(g_Perms.read_registry, 1, 0)
     chkScheduler.Value = IIf(g_Perms.scheduler,   1, 0)
     chkProcesses.Value = IIf(g_Perms.list_processes, 1, 0)
     chkPorts.Value     = IIf(g_Perms.read_port,   1, 0)
     chkSerial.Value    = IIf(g_Perms.serial,      1, 0)
     chkAudio.Value     = IIf(g_Perms.audio,       1, 0)
+    chkMoveFile.Value  = IIf(g_Perms.move_file,   1, 0)
+    chkWindowRead.Value = IIf(g_Perms.window_read, 1, 0)
+    chkClipboardRead.Value = IIf(g_Perms.clipboard_read, 1, 0)
+    chkNetworkRead.Value = IIf(g_Perms.network_read, 1, 0)
 End Sub
 
 Private Sub ReadPermCheckboxes()
@@ -528,12 +565,15 @@ Private Sub ReadPermCheckboxes()
     g_Perms.write_file    = (chkWriteFile.Value = 1)
     g_Perms.run_command   = (chkRunCmd.Value = 1)
     g_Perms.read_registry = (chkRegistry.Value = 1)
-    g_Perms.write_registry= (chkRegistry.Value = 1)
     g_Perms.scheduler     = (chkScheduler.Value = 1)
     g_Perms.list_processes= (chkProcesses.Value = 1)
     g_Perms.read_port     = (chkPorts.Value = 1)
     g_Perms.serial        = (chkSerial.Value = 1)
     g_Perms.audio         = (chkAudio.Value = 1)
+    g_Perms.move_file     = (chkMoveFile.Value = 1)
+    g_Perms.window_read   = (chkWindowRead.Value = 1)
+    g_Perms.clipboard_read = (chkClipboardRead.Value = 1)
+    g_Perms.network_read  = (chkNetworkRead.Value = 1)
 End Sub
 
 ' Fetch agent_id from /health and cache it in m_agentId
@@ -725,6 +765,7 @@ Private Function GetActivePermsStr() As String
     parts = ""
     If g_Perms.read_file      Then parts = parts & "file_read,"
     If g_Perms.write_file     Then parts = parts & "file_write,"
+    If g_Perms.move_file      Then parts = parts & "file_move,"
     If g_Perms.delete_file    Then parts = parts & "file_delete,"
     If g_Perms.read_registry  Then parts = parts & "registry_read,"
     If g_Perms.write_registry Then parts = parts & "registry_write,"
@@ -733,7 +774,16 @@ Private Function GetActivePermsStr() As String
     If g_Perms.kill_process   Then parts = parts & "process_kill,"
     If g_Perms.serial         Then parts = parts & "serial,"
     If g_Perms.scheduler      Then parts = parts & "scheduler,"
-    If g_Perms.read_port      Then parts = parts & "hardware_io,"
+    If g_Perms.read_port      Then parts = parts & "hardware_read,"
+    If g_Perms.write_port     Then parts = parts & "hardware_write,"
+    If g_Perms.load_vxd       Then parts = parts & "vxd_load,"
+    If g_Perms.modify_sysconfig Then parts = parts & "system_config,"
+    If g_Perms.audio          Then parts = parts & "audio,"
+    If g_Perms.display        Then parts = parts & "display,"
+    If g_Perms.screenshot     Then parts = parts & "screenshot,"
+    If g_Perms.clipboard_read Then parts = parts & "clipboard_read,"
+    If g_Perms.window_read    Then parts = parts & "window_read,"
+    If g_Perms.network_read   Then parts = parts & "network_read,"
     If Len(parts) > 0 Then parts = Left(parts, Len(parts) - 1)
     GetActivePermsStr = parts
 End Function

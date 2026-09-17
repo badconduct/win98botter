@@ -73,6 +73,9 @@ function initDb(dbPath) {
       mime_type       TEXT,
       is_text_file    INTEGER DEFAULT 0,
       file_size_bytes INTEGER,
+      remote_modified TEXT,
+      remote_content_hash TEXT,
+      remote_hash_algorithm TEXT,
       UNIQUE(agent_id, file_name, discovered_path)
     );
 
@@ -116,6 +119,13 @@ function initDb(dbPath) {
 
     CREATE INDEX IF NOT EXISTS idx_directory_tree_file
       ON directory_tree(agent_id, is_directory);
+
+    CREATE TABLE IF NOT EXISTS agent_prompt_settings (
+      agent_id      TEXT PRIMARY KEY,
+      flags_json    TEXT NOT NULL DEFAULT '{}',
+      custom_prompt TEXT NOT NULL DEFAULT '',
+      updated_at    TEXT NOT NULL
+    );
   `);
 
   // Compatibility migration: older builds used "exists" as the file state column.
@@ -133,6 +143,23 @@ function initDb(dbPath) {
     db.exec(
       'UPDATE file_locations SET exists_flag = COALESCE(exists_flag, "exists", 1)',
     );
+  }
+
+  const hasRemoteModified = cols.some((c) => c.name === "remote_modified");
+  if (!hasRemoteModified) {
+    db.exec("ALTER TABLE file_locations ADD COLUMN remote_modified TEXT");
+  }
+  const hasRemoteContentHash = cols.some(
+    (c) => c.name === "remote_content_hash",
+  );
+  const hasRemoteHashAlgorithm = cols.some(
+    (c) => c.name === "remote_hash_algorithm",
+  );
+  if (!hasRemoteContentHash) {
+    db.exec("ALTER TABLE file_locations ADD COLUMN remote_content_hash TEXT");
+  }
+  if (!hasRemoteHashAlgorithm) {
+    db.exec("ALTER TABLE file_locations ADD COLUMN remote_hash_algorithm TEXT");
   }
 
   const dirCols = db.prepare("PRAGMA table_info(directory_tree)").all();

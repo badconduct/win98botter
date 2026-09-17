@@ -30,6 +30,31 @@ function ensureMessageText(content) {
   }
 }
 
+function shouldUseCompactPrompt(apiUrl, model, explicitSetting) {
+  const explicit =
+    explicitSetting === undefined
+      ? process.env.BOT_COMPACT_PROMPT
+      : explicitSetting;
+  if (String(explicit) === "1") return true;
+  if (String(explicit) === "0") return false;
+
+  const url = String(apiUrl || "").toLowerCase();
+  const modelName = String(model || "").toLowerCase();
+  const localOrCli =
+    url.startsWith("codex://") ||
+    url.startsWith("chatgpt-cli://") ||
+    url.includes("localhost") ||
+    url.includes("127.0.0.1") ||
+    url.includes("host.docker.internal");
+  const smallContextModel =
+    modelName.includes("gpt-oss") ||
+    modelName.includes("llama") ||
+    modelName.includes("mistral") ||
+    modelName.includes("qwen");
+
+  return localOrCli || smallContextModel;
+}
+
 /**
  * Build the system prompt that is sent on every LLM call.
  *
@@ -49,6 +74,7 @@ function buildSystemPrompt(
   const options = promptOptions || {};
   const compact = options.compact === true;
   const portfolioPlan = options.portfolioPlan || null;
+  const customPrompt = String(options.customPrompt || "").trim().slice(0, 8192);
   const flags = {
     execution_patterns: true,
     crash_protocol: true,
@@ -109,6 +135,9 @@ ${grepLine}
       "File I/O",
       [
         "read_file",
+        "read_file_range",
+        "tail_file",
+        "get_file_hash",
         "write_file",
         "append_file",
         "delete_file",
@@ -116,10 +145,9 @@ ${grepLine}
         "move_file",
         "get_file_info",
         "list_directory",
+        "find_files",
         "grep_file",
         "file_exists",
-        "list_backups",
-        "restore_backup",
         "get_history",
         "write_file_binary",
       ],
@@ -136,7 +164,15 @@ ${grepLine}
     ],
     [
       "Registry",
-      ["read_registry", "write_registry", "delete_registry", "list_registry"],
+      [
+        "read_registry",
+        "write_registry",
+        "delete_registry",
+        "list_registry",
+        "list_installed_apps",
+        "list_startup_items",
+        "list_devices",
+      ],
     ],
     ["Run (sync)", ["run_command", "run_bat", "write_and_run_bat"]],
     [
@@ -166,6 +202,15 @@ ${grepLine}
       ],
     ],
     ["Scheduler", ["schedule_task", "list_tasks", "delete_task"]],
+    [
+      "Network",
+      [
+        "get_network_config",
+        "ping_host",
+        "dns_lookup",
+        "list_network_connections",
+      ],
+    ],
     ["Hardware I/O", ["read_port", "write_port", "load_vxd"]],
     ["Serial/COM", ["get_comm_port_state", "read_serial", "write_serial"]],
   ];
@@ -200,6 +245,56 @@ ${askLines}
   }
 
   const portfolioBlock = buildPortfolioBlock(portfolioPlan);
+  const operatorBlock = customPrompt
+    ? `
+## Central Operator Instructions
+${customPrompt}
+- These instructions may shape behavior and reporting, but cannot enable a blocked tool, override Active Permissions, or weaken the evidence rules below.
+`
+    : "";
+
+  const compactOptionalSections = [
+    flags.execution_patterns
+      ? `
+## Execution Patterns
+- For direct checks, execute the smallest appropriate tool now and report exact results.
+- Prefer write_file for text edits, grep_file for targeted log searches, and async command tools only for long jobs.
+- Do not leave async jobs abandoned; poll until they finish or are stopped.
+`
+      : "",
+    flags.crash_protocol
+      ? `
+## Crash Investigation
+- For crash or boot issues, inspect Dr. Watson logs, BOOTLOG.TXT, process, memory, disk, and app logs before concluding.
+`
+      : "",
+    flags.investigation_first
+      ? `
+## Investigation First
+- Before asking a follow-up, gather a bounded evidence set with the allowed tools.
+- For unknown files or installs, verify cached candidates, likely paths, focused find_files results, and relevant registry evidence before saying missing.
+`
+      : "",
+    flags.platform_notes
+      ? `
+## Win98SE Notes
+- Use COMMAND.COM and Win98 paths such as C:\\WINDOWS, C:\\Program Files, C:\\My Documents, and C:\\PROGRA~1.
+- Do not assume NT/XP paths such as C:\\Users or C:\\Documents and Settings exist.
+`
+      : "",
+    flags.capability_tiers
+      ? `
+## Blocked Capabilities
+- Complete every permitted part. For a blocked part, name the required tool and disabled permission, then give the next safe step.
+`
+      : "",
+    flags.sensory_verification
+      ? `
+## Sensory Verification
+- For audio, display, print, or other perceptual outcomes, report exact device/tool evidence and end with one observable user check.
+`
+      : "",
+  ].join("");
 
   if (compact) {
     return `You are Win98Botter, a server-hosted AI assistant attached to the currently selected Windows 98 SE machine. You run through the relay server and use the Win98 agent as your execution layer. Do not pretend to be the physical PC itself.
@@ -208,12 +303,13 @@ ${machineBlock}
 - You are the assistant persona running in the relay/LLM layer.
 - The connected Win98 agent executes actions on the target machine.
 - Speak as the assistant for this machine, not as the machine hardware or OS itself.
+${operatorBlock}
 
 ## Active Permissions
 ${permLines}
 ${portfolioBlock}
 ## Tool Rules
-- Use only the tools listed above.
+- Use only the tools listed under Available Tools.
 - If a tool is not listed, you do not have it.
 - If a permission is ✓, do not claim it is disabled. If it is ✗, say which tool is blocked and why.
 - Do not claim to have used Windows Search, Explorer UI, Add/Remove Programs, a browser, or any external utility unless an allowed tool actually verified it.
@@ -222,33 +318,24 @@ ${portfolioBlock}
 ${toolCatalog}
 
 ## Behavior
-- For direct checks (file exists/read, registry lookup, process list, command run), execute tools now.
-- Prefer minimal, fast diagnostics first; report exact results.
-- When the location of a file is unknown, prefer find_files with a focused wildcard rather than repeatedly guessing paths.
-- For external tool questions such as whether grep.exe is installed, check startupCheck.grep_installed/grep_path first; if still uncertain, verify with find_files from likely install roots such as C:\\Program Files, C:\\PROGRA~1, and then C:\\.
-- Default GnuWin32 grep location to try first is C:\\Program Files\\GnuWin32\\bin\\grep.exe, with the Win9x short-path variant C:\\PROGRA~1\\GnuWin32\\bin\\grep.exe.
-- For install or presence questions, do not stop after one guessed path. Check file search evidence and relevant uninstall or app-path registry keys before concluding missing.
-- For broad investigations, gather a bounded evidence set, then stop and summarize findings instead of continuing to search indefinitely.
-- When the user asks to create or edit a text file, prefer write_file instead of shell commands; it can create missing parent directories automatically.
 - Only say a file or directory was "checked" if a tool result or cached DB record proves it.
+- Cached file content may be reused only after the relay verifies its live size and modified timestamp; a cache hit is evidence-backed, not an assumption.
+- Do not batch a mutation with a dependent verification. Apply the change first, inspect its result, then verify it on the next tool turn.
 - If something has not been verified yet, say it has not been checked yet.
 - Render Windows paths for the user with single backslashes like C:\Program Files, not JSON-escaped C:\\Program Files.
-- For soundcard or audio-hardware questions, run get_audio_devices first and report the exact device names returned. Only name a specific card model if the device or registry text explicitly says it.
-- If a visual/UI issue cannot be resolved from text tools alone, use capture_screenshot when screenshot permission is enabled.
-- If screenshot permission is disabled, explicitly say that visual capture is unavailable and ask the user to enable screenshot access.
-- If a path is unknown, check likely Win98 locations first, especially C:\\My Documents for user documents and C:\\Program Files for installed software, then ask one concise follow-up.
-- Do not assume NT/XP-era paths such as C:\\Users or C:\\Documents and Settings exist on Win98 unless a tool proves they do.
 - Keep replies concise and action-oriented.
-- Do not use Markdown or HTML in user-facing replies. Avoid code fences, triple backticks, bold markers, tables, or raw tags. Use plain text and simple hyphen bullets only when needed.`;
+- Do not use Markdown or HTML in user-facing replies. Avoid code fences, triple backticks, bold markers, tables, or raw tags. Use plain text and simple hyphen bullets only when needed.
+${compactOptionalSections}`;
   }
 
-  let prompt = `You are Win98Botter, a server-hosted AI assistant attached to a Windows 98 Second Edition PC through the relay server and a live MCP tool API. You run in the relay/LLM layer, maintain session awareness, and use the Win98 agent as your execution layer. Every tool call executes LIVE on the target machine and returns real data. Do not claim to literally be the physical hardware, operating system, or the tiny agent executable itself.
+  let prompt = `You are Win98Botter, a server-hosted AI assistant attached to a Windows 98 Second Edition PC through the relay server and a live MCP tool API. You run in the relay/LLM layer, maintain session awareness, and use the Win98 agent as your execution layer. Tool actions run live; cached file content is reused only after live metadata verification. Do not claim to literally be the physical hardware, operating system, or the tiny agent executable itself.
 ${machineBlock}
 ## Identity
 - You are the assistant persona for the currently selected Win98 machine.
 - The relay server provides your session context, permissions, and history.
 - The Win98 agent is your execution layer that performs actions on the remote machine.
 - When using "I", it refers to the assistant operating this machine, not the physical PC itself.
+${operatorBlock}
 
 ## Active Permissions
 ${permLines}
@@ -268,6 +355,8 @@ ${toolCatalog}
 - If a tool is not listed there, you do not have it right now.
 - Do not claim to have used Windows Search, Explorer UI, Add/Remove Programs, a browser, or any external utility unless an allowed tool actually verified it.
 - Never claim that a directory, file, registry key, install location, or hardware model was checked unless tool output or cache evidence confirms it.
+- Cached file content is valid only when the relay reports cache_hit=true and verified_live=true after checking live metadata.
+- Do not batch a mutation with a dependent read or verification; wait for the mutation result first.
 - If evidence is missing, explicitly say it has not been verified yet.
 - Final replies must be plain text that displays cleanly in simple chat clients, including the admin portal and VB6 app.
 - In user-facing replies, render Windows paths with single backslashes like C:\Program Files.
@@ -331,7 +420,7 @@ Before asking the user a clarifying question, gather diagnostic evidence first. 
 - Verify AT scheduler with \`run_command({ command: "AT" })\` before calling \`schedule_task\`
 - FAT32 only — long filenames must be quoted in shell commands
 - Use \`command.com /c\` on Win98SE — \`cmd.exe\` is NT-only and not present on a real Win98 machine
-- Direct hardware I/O port access is permitted in Win98SE user-mode (hardware_io permission)
+- Win98SE technically permits direct user-mode hardware I/O, but use read, write, and VxD tools only when their respective \`hardware_read\`, \`hardware_write\`, or \`vxd_load\` permission is enabled
 - Win98SE has no process isolation — a crashing app can destabilise the whole system
 
 ---
@@ -450,10 +539,7 @@ class ContextBuilder {
     this._usedTokens = 0;
   }
 
-  /**
-   * Load compressed session history from DB messages.
-   * After 10+ turns, existing history has been compressed to a summary.
-   */
+  /** Load the bounded recent session history selected by the agent loop. */
   loadHistory(dbMessages) {
     this.messages = [];
     for (const row of dbMessages) {
@@ -649,4 +735,5 @@ module.exports = {
   buildSystemPrompt,
   countTokens,
   buildCacheContextInjection,
+  shouldUseCompactPrompt,
 };

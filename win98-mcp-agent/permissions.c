@@ -1,9 +1,9 @@
 /*
  * permissions.c — permissions.ini loader + tool filter
  *
- * Reads C:\WIN98BOTTER\permissions.ini on startup and on each tools/list
- * request (so the relay can update permissions at runtime without restarting
- * the agent).
+ * Reads C:\WIN98BOTTER\permissions.ini on startup or permissions/update.
+ * The relay can also apply non-persistent runtime overrides through
+ * set_permissions and refresh the resulting tools/list advertisement.
  *
  * Format expected:
  *   [tools]
@@ -47,6 +47,7 @@ void permissions_load(const char *ini_path)
 
     g_perms.read_file       = read_ini_bool(ini_path, section, "read_file");
     g_perms.write_file      = read_ini_bool(ini_path, section, "write_file");
+    g_perms.move_file       = read_ini_bool(ini_path, section, "move_file");
     g_perms.delete_file     = read_ini_bool(ini_path, section, "delete_file");
     g_perms.list_processes  = read_ini_bool(ini_path, section, "list_processes");
     g_perms.kill_process    = read_ini_bool(ini_path, section, "kill_process");
@@ -62,6 +63,9 @@ void permissions_load(const char *ini_path)
     g_perms.audio           = read_ini_bool(ini_path, section, "audio");
     g_perms.display         = read_ini_bool(ini_path, section, "display");
     g_perms.screenshot      = read_ini_bool(ini_path, section, "screenshot");
+    g_perms.clipboard_read  = read_ini_bool(ini_path, section, "clipboard_read");
+    g_perms.window_read     = read_ini_bool(ini_path, section, "window_read");
+    g_perms.network_read    = read_ini_bool(ini_path, section, "network_read");
 
     g_perms_loaded = 1;
 }
@@ -80,12 +84,14 @@ int permission_allowed(const char *tool_name)
 
     /* File read tools */
     if (strcmp(tool_name, "read_file")         == 0 ||
+        strcmp(tool_name, "read_file_range")   == 0 ||
+        strcmp(tool_name, "tail_file")         == 0 ||
+        strcmp(tool_name, "get_file_hash")     == 0 ||
         strcmp(tool_name, "grep_file")          == 0 ||
         strcmp(tool_name, "get_file_info")      == 0 ||
         strcmp(tool_name, "file_exists")        == 0 ||
         strcmp(tool_name, "list_directory")     == 0 ||
         strcmp(tool_name, "find_files")         == 0 ||
-        strcmp(tool_name, "list_backups")       == 0 ||
         strcmp(tool_name, "get_history")        == 0 ||
         strcmp(tool_name, "ini_read")           == 0 ||
         strcmp(tool_name, "ini_read_section")   == 0 ||
@@ -98,11 +104,14 @@ int permission_allowed(const char *tool_name)
         strcmp(tool_name, "write_file_binary") == 0 ||
         strcmp(tool_name, "append_file")       == 0 ||
         strcmp(tool_name, "copy_file")         == 0 ||
-        strcmp(tool_name, "move_file")         == 0 ||
-        strcmp(tool_name, "restore_backup")    == 0 ||
         strcmp(tool_name, "ini_write")         == 0 ||
         strcmp(tool_name, "ini_delete_key")    == 0) {
         return p->write_file;
+    }
+
+    /* Moving or renaming removes the source path, so it has its own grant. */
+    if (strcmp(tool_name, "move_file") == 0) {
+        return p->move_file;
     }
 
     /* Delete file */
@@ -133,8 +142,19 @@ int permission_allowed(const char *tool_name)
 
     /* Registry read */
     if (strcmp(tool_name, "read_registry")  == 0 ||
-        strcmp(tool_name, "list_registry")  == 0) {
+        strcmp(tool_name, "list_registry")  == 0 ||
+        strcmp(tool_name, "list_installed_apps") == 0 ||
+        strcmp(tool_name, "list_startup_items")  == 0 ||
+        strcmp(tool_name, "list_devices")        == 0) {
         return p->read_registry;
+    }
+
+    /* Structured read-only networking. */
+    if (strcmp(tool_name, "get_network_config")       == 0 ||
+        strcmp(tool_name, "ping_host")                == 0 ||
+        strcmp(tool_name, "dns_lookup")               == 0 ||
+        strcmp(tool_name, "list_network_connections") == 0) {
+        return p->network_read;
     }
 
     /* Registry write */
@@ -170,7 +190,8 @@ int permission_allowed(const char *tool_name)
 
     /* Display */
     if (strcmp(tool_name, "set_display_settings")   == 0 ||
-        strcmp(tool_name, "set_desktop_appearance")  == 0) {
+        strcmp(tool_name, "set_desktop_appearance")  == 0 ||
+        strcmp(tool_name, "send_window_message")     == 0) {
         return p->display;
     }
 
@@ -179,12 +200,17 @@ int permission_allowed(const char *tool_name)
         return p->screenshot;
     }
 
+    if (strcmp(tool_name, "get_window_list") == 0) {
+        return p->window_read;
+    }
+
+    if (strcmp(tool_name, "read_clipboard") == 0) {
+        return p->clipboard_read;
+    }
+
     /* Always-allowed read-only system tools */
     if (strcmp(tool_name, "get_system_info")   == 0 ||
         strcmp(tool_name, "get_disk_info")     == 0 ||
-        strcmp(tool_name, "get_window_list")   == 0 ||
-        strcmp(tool_name, "read_clipboard")    == 0 ||
-        strcmp(tool_name, "send_window_message") == 0 ||
         strcmp(tool_name, "get_screen_resolution") == 0) {
         return 1;
     }
@@ -218,6 +244,7 @@ void permissions_set_from_json(cJSON *obj)
 
     SET_PERM(read_file,        "read_file")
     SET_PERM(write_file,       "write_file")
+    SET_PERM(move_file,        "move_file")
     SET_PERM(delete_file,      "delete_file")
     SET_PERM(list_processes,   "list_processes")
     SET_PERM(kill_process,     "kill_process")
@@ -233,6 +260,9 @@ void permissions_set_from_json(cJSON *obj)
     SET_PERM(audio,            "audio")
     SET_PERM(display,          "display")
     SET_PERM(screenshot,       "screenshot")
+    SET_PERM(clipboard_read,   "clipboard_read")
+    SET_PERM(window_read,      "window_read")
+    SET_PERM(network_read,     "network_read")
 
 #undef SET_PERM
 }
@@ -248,6 +278,7 @@ cJSON *permissions_to_json(void)
 
     cJSON_AddBoolToObject(obj, "read_file",        p->read_file);
     cJSON_AddBoolToObject(obj, "write_file",       p->write_file);
+    cJSON_AddBoolToObject(obj, "move_file",        p->move_file);
     cJSON_AddBoolToObject(obj, "delete_file",      p->delete_file);
     cJSON_AddBoolToObject(obj, "list_processes",   p->list_processes);
     cJSON_AddBoolToObject(obj, "kill_process",     p->kill_process);
@@ -263,6 +294,9 @@ cJSON *permissions_to_json(void)
     cJSON_AddBoolToObject(obj, "audio",            p->audio);
     cJSON_AddBoolToObject(obj, "display",          p->display);
     cJSON_AddBoolToObject(obj, "screenshot",       p->screenshot);
+    cJSON_AddBoolToObject(obj, "clipboard_read",   p->clipboard_read);
+    cJSON_AddBoolToObject(obj, "window_read",      p->window_read);
+    cJSON_AddBoolToObject(obj, "network_read",     p->network_read);
 
     return obj;
 }

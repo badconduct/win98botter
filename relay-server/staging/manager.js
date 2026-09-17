@@ -181,16 +181,18 @@ class StagingManager {
    * @param {string} win98Path  Absolute path on Win98 machine
    * @returns {object}          { staged_path, parsed, truncated_at_bytes }
    */
-  async stageAndParse(sessionId, win98Path) {
+  async stageAndParse(sessionId, win98Path, prefetchedInfo) {
     const dir = this.sessionDir(sessionId);
     const safeName = win98Path.replace(/[:\\\/]/g, "_").replace(/^_+/, "");
     const stagedPath = path.join(dir, safeName);
 
-    let info;
-    try {
-      info = await this.win98.callTool("get_file_info", { path: win98Path });
-    } catch (err) {
-      return { error: `get_file_info failed: ${err.message}` };
+    let info = prefetchedInfo || null;
+    if (!info) {
+      try {
+        info = await this.win98.callTool("get_file_info", { path: win98Path });
+      } catch (err) {
+        return { error: `get_file_info failed: ${err.message}` };
+      }
     }
 
     if (!info || info.error) {
@@ -298,6 +300,7 @@ class StagingManager {
       win98_path: win98Path,
       staged_path: stagedPath,
       file_size: totalSize,
+      modified: info.modified || null,
       staged_bytes: fullBuffer.length,
       truncated_at_bytes: truncatedAt,
       mime_type: mimeType,

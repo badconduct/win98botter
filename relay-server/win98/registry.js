@@ -4,7 +4,7 @@
  * AgentRegistry — tracks all currently connected (and recently seen) Win98 agents.
  *
  * Each entry keyed by a registry agentId (tab/connection id) holds:
- *   { connection, watchdog, agentLoop, permissions, canonicalAgentId, promptFlags }
+ *   { connection, watchdog, agentLoop, permissions, staging, canonicalAgentId, promptFlags }
  *
  * Also maintains an in-memory ring-buffer of log lines for the GUI's log SSE
  * endpoint, and a list of SSE subscribers to fan-out logs in real time.
@@ -28,8 +28,10 @@ class AgentRegistry {
       watchdog,
       agentLoop,
       permissions,
+      staging,
       canonicalAgentId,
       promptFlags,
+      customPrompt,
     },
   ) {
     this._agents.set(agentId, {
@@ -37,8 +39,10 @@ class AgentRegistry {
       watchdog,
       agentLoop,
       permissions,
+      staging,
       canonicalAgentId: canonicalAgentId || agentId,
       promptFlags: promptFlags || null,
+      customPrompt: customPrompt || "",
     });
   }
 
@@ -48,6 +52,18 @@ class AgentRegistry {
 
   get(agentId) {
     return this._agents.get(agentId) || null;
+  }
+
+  getByCanonicalId(canonicalAgentId) {
+    for (const [agentId, entry] of this._agents) {
+      if (
+        agentId === canonicalAgentId ||
+        entry.canonicalAgentId === canonicalAgentId
+      ) {
+        return { agentId, ...entry };
+      }
+    }
+    return null;
   }
 
   /** Return the first connected agent, or null — used when no agent_id param provided. */

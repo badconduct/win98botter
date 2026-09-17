@@ -5,6 +5,9 @@ const POLL_MS = 4000;
 
 const FILE_OPS = new Set([
   "read_file",
+  "read_file_range",
+  "tail_file",
+  "get_file_hash",
   "write_file",
   "write_file_binary",
   "append_file",
@@ -358,6 +361,9 @@ function ActivityRow({ row }) {
 function shortOp(name) {
   const map = {
     read_file: "READ",
+    read_file_range: "RANGE",
+    tail_file: "TAIL",
+    get_file_hash: "HASH",
     write_file: "WRITE",
     append_file: "APPEND",
     delete_file: "DEL",

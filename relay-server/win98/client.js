@@ -16,14 +16,27 @@ class Win98Server {
     this.log = logger;
     this._server = null;
     this._onConnectionCb = null;
+    this._sockets = new Set();
   }
 
   /**
    * Start the TCP server.  Calls onConnectionCb with each new Win98Connection.
    */
   listen(port, host) {
+    const allowedPeers = String(process.env.WIN98_ALLOWED_PEERS || "")
+      .split(",").map(value => value.trim()).filter(Boolean);
+    if (allowedPeers.some(value => net.isIP(value) !== 4)) {
+      return Promise.reject(new Error("WIN98_ALLOWED_PEERS must contain explicit IPv4 addresses"));
+    }
     return new Promise((resolve, reject) => {
       this._server = net.createServer((socket) => {
+        const peer = String(socket.remoteAddress || "").replace(/^::ffff:/, "");
+        if (allowedPeers.length && !allowedPeers.includes(peer)) {
+          socket.destroy();
+          return;
+        }
+        this._sockets.add(socket);
+        socket.once("close", () => this._sockets.delete(socket));
         const conn = new Win98Connection(socket, this.log);
         this.log.info(
           { addr: socket.remoteAddress },
@@ -48,7 +61,10 @@ class Win98Server {
 
   close() {
     return new Promise((resolve) => {
-      if (this._server) this._server.close(resolve);
+      if (this._server) {
+        this._server.close(resolve);
+        for (const socket of this._sockets) socket.destroy();
+      }
       else resolve();
     });
   }

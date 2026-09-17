@@ -9,6 +9,7 @@ Option Explicit
 Public Type PermissionsType
     read_file       As Boolean
     write_file      As Boolean
+    move_file       As Boolean
     delete_file     As Boolean
     list_processes  As Boolean
     kill_process    As Boolean
@@ -23,6 +24,10 @@ Public Type PermissionsType
     scheduler       As Boolean
     audio           As Boolean
     display         As Boolean
+    screenshot      As Boolean
+    clipboard_read  As Boolean
+    window_read     As Boolean
+    network_read    As Boolean
 End Type
 
 Public g_Perms As PermissionsType
@@ -45,6 +50,7 @@ Private Declare Function WritePrivateProfileStringA Lib "kernel32" ( _
 Public Sub LoadPermissions()
     g_Perms.read_file        = ReadBool("read_file",        False)
     g_Perms.write_file       = ReadBool("write_file",       False)
+    g_Perms.move_file        = ReadBool("move_file",        False)
     g_Perms.delete_file      = ReadBool("delete_file",      False)
     g_Perms.list_processes   = ReadBool("list_processes",   False)
     g_Perms.kill_process     = ReadBool("kill_process",     False)
@@ -59,6 +65,10 @@ Public Sub LoadPermissions()
     g_Perms.scheduler        = ReadBool("scheduler",        False)
     g_Perms.audio            = ReadBool("audio",            True)
     g_Perms.display          = ReadBool("display",          True)
+    g_Perms.screenshot       = ReadBool("screenshot",       False)
+    g_Perms.clipboard_read   = ReadBool("clipboard_read",   False)
+    g_Perms.window_read      = ReadBool("window_read",      True)
+    g_Perms.network_read     = ReadBool("network_read",     True)
 End Sub
 
 ' ── SavePermissions ────────────────────────────────────────────────────────────
@@ -66,6 +76,7 @@ End Sub
 Public Sub SavePermissions()
     WriteBool "read_file",        g_Perms.read_file
     WriteBool "write_file",       g_Perms.write_file
+    WriteBool "move_file",        g_Perms.move_file
     WriteBool "delete_file",      g_Perms.delete_file
     WriteBool "list_processes",   g_Perms.list_processes
     WriteBool "kill_process",     g_Perms.kill_process
@@ -80,6 +91,10 @@ Public Sub SavePermissions()
     WriteBool "scheduler",        g_Perms.scheduler
     WriteBool "audio",            g_Perms.audio
     WriteBool "display",          g_Perms.display
+    WriteBool "screenshot",       g_Perms.screenshot
+    WriteBool "clipboard_read",   g_Perms.clipboard_read
+    WriteBool "window_read",      g_Perms.window_read
+    WriteBool "network_read",     g_Perms.network_read
 End Sub
 
 Public Function PermissionsToJson() As String
@@ -87,6 +102,7 @@ Public Function PermissionsToJson() As String
     s = "{"
     s = s & """read_file"":" & BoolJson(g_Perms.read_file)
     s = s & ",""write_file"":" & BoolJson(g_Perms.write_file)
+    s = s & ",""move_file"":" & BoolJson(g_Perms.move_file)
     s = s & ",""delete_file"":" & BoolJson(g_Perms.delete_file)
     s = s & ",""list_processes"":" & BoolJson(g_Perms.list_processes)
     s = s & ",""kill_process"":" & BoolJson(g_Perms.kill_process)
@@ -101,6 +117,10 @@ Public Function PermissionsToJson() As String
     s = s & ",""scheduler"":" & BoolJson(g_Perms.scheduler)
     s = s & ",""audio"":" & BoolJson(g_Perms.audio)
     s = s & ",""display"":" & BoolJson(g_Perms.display)
+    s = s & ",""screenshot"":" & BoolJson(g_Perms.screenshot)
+    s = s & ",""clipboard_read"":" & BoolJson(g_Perms.clipboard_read)
+    s = s & ",""window_read"":" & BoolJson(g_Perms.window_read)
+    s = s & ",""network_read"":" & BoolJson(g_Perms.network_read)
     s = s & "}"
     PermissionsToJson = s
 End Function
